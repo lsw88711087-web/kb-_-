@@ -15,7 +15,14 @@ from ..agents.debate import DebateConfig, run_debate, single_shot
 from ..agents.schema import DebateResult
 from ..config import DATA_DIR, OUTPUT_DIR
 from ..llm import LLMClient
-from ..personas.loader import load_personas, sample_cohort
+from ..personas.loader import (
+    PersonaSource,
+    is_nemotron_persona,
+    load_personas,
+    persona_source_counts,
+    require_nemotron_personas,
+    sample_cohort,
+)
 from ..personas.schema import Persona, Segment
 from ..products.schema import Product
 from ..rag.retriever import get_retriever
@@ -66,6 +73,10 @@ class SimulationReport(BaseModel):
     backend: str = ""
     model_small: str = ""
     model_judge: str = ""
+    persona_pool_size: int = 0
+    persona_nemotron_count: int = 0
+    persona_synthetic_count: int = 0
+    persona_source_counts: dict[str, int] = Field(default_factory=dict)
     segments: list[SegmentResult] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -126,13 +137,27 @@ def simulate_product(
     workers: int = 4,
     config: DebateConfig | None = None,
     personas: list[Persona] | None = None,
+    persona_source: PersonaSource = "auto",
+    require_real_personas: bool = False,
     progress: bool = True,
 ) -> SimulationReport:
     from ..config import SETTINGS
 
     cfg = config or DebateConfig()
     client = LLMClient()
-    pool = personas if personas is not None else load_personas()
+    pool = (
+        personas
+        if personas is not None
+        else load_personas(
+            source=persona_source,
+            allow_synthetic_fallback=not require_real_personas,
+        )
+    )
+    if require_real_personas:
+        require_nemotron_personas(pool)
+    source_counts = persona_source_counts(pool)
+    nemotron_count = sum(1 for p in pool if is_nemotron_persona(p))
+    synthetic_count = len(pool) - nemotron_count
     names = segment_names or product.target_segments or None
     segments = load_segments(names)
     if not segments:
@@ -189,6 +214,18 @@ def simulate_product(
             )
         )
 
+    notes = [
+        f"페르소나 출처: {source_counts}",
+        "Nemotron-Personas-Korea의 인구·직업·서술 필드에 KOSIS 기반 합성 재무 프로파일을 결합했다.",
+        "저신뢰(low) 세그먼트는 추가 검증 대상이다.",
+    ]
+    if synthetic_count:
+        notes.insert(
+            1,
+            "합성 폴백 페르소나가 포함되어 있다. 실제 Nemotron 검증 실행은 "
+            "`--persona-source hf --require-real-personas` 또는 로컬 캐시 생성 후 재실행하라.",
+        )
+
     return SimulationReport(
         product_id=product.product_id,
         product_name=product.name,
@@ -198,11 +235,12 @@ def simulate_product(
         backend=SETTINGS.backend,
         model_small=SETTINGS.model_small,
         model_judge=SETTINGS.model_judge,
+        persona_pool_size=len(pool),
+        persona_nemotron_count=nemotron_count,
+        persona_synthetic_count=synthetic_count,
+        persona_source_counts=source_counts,
         segments=seg_results,
-        notes=[
-            "합성 페르소나 기반 결과다. 변수 간 결합분포 정합성은 검증되지 않았으므로 탐색·경보용으로만 사용한다.",
-            "저신뢰(low) 세그먼트는 추가 검증 대상이다.",
-        ],
+        notes=notes,
     )
 
 
@@ -259,9 +297,22 @@ def sensitivity_analysis(
     n_seeds: int = 2,
     mode: Mode = "debate",
     workers: int = 4,
+    personas: list[Persona] | None = None,
+    persona_source: PersonaSource = "auto",
+    require_real_personas: bool = False,
 ) -> list[SensitivityRow]:
     rows: list[SensitivityRow] = []
     base = VariantSpec(label="기준안")
+    pool = (
+        personas
+        if personas is not None
+        else load_personas(
+            source=persona_source,
+            allow_synthetic_fallback=not require_real_personas,
+        )
+    )
+    if require_real_personas:
+        require_nemotron_personas(pool)
     for spec in [base] + specs:
         variant = apply_variant(product, spec)
         rep = simulate_product(
@@ -271,6 +322,8 @@ def sensitivity_analysis(
             n_seeds=n_seeds,
             mode=mode,
             workers=workers,
+            personas=pool,
+            require_real_personas=require_real_personas,
             progress=False,
         )
         for sr in rep.segments:

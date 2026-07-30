@@ -1,0 +1,876 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FDM Product Benchmark Viewer</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fa;
+        --panel: #ffffff;
+        --panel-soft: #f9fafb;
+        --text: #162033;
+        --muted: #667085;
+        --quiet: #98a2b3;
+        --line: #d8dee8;
+        --line-strong: #b8c1cf;
+        --ink: #23314d;
+        --single: #4f7cff;
+        --single-soft: rgba(79, 124, 255, 0.16);
+        --debate: #16a085;
+        --debate-soft: rgba(22, 160, 133, 0.16);
+        --warn: #d97706;
+        --bad: #c0392b;
+        --shadow: 0 18px 48px rgba(22, 32, 51, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 24px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(12px);
+      }
+
+      .brand {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+
+      .brand span,
+      .meta-line {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      main {
+        width: min(1220px, calc(100vw - 32px));
+        margin: 24px auto 56px;
+      }
+
+      #drop-zone {
+        display: grid;
+        place-items: center;
+        min-height: 260px;
+        margin: 36px auto;
+        padding: 28px;
+        border: 2px dashed var(--line-strong);
+        border-radius: 12px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        text-align: center;
+        cursor: pointer;
+        transition: border-color 0.16s ease, transform 0.16s ease;
+      }
+
+      #drop-zone.drag-over,
+      #drop-zone:hover {
+        border-color: var(--ink);
+        transform: translateY(-1px);
+      }
+
+      #drop-zone strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 18px;
+      }
+
+      #drop-zone p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      #file-input {
+        display: none;
+      }
+
+      button,
+      select {
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+      }
+
+      button {
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      button.primary {
+        border-color: var(--ink);
+        background: var(--ink);
+        color: #fff;
+      }
+
+      button:hover {
+        filter: brightness(0.98);
+      }
+
+      select {
+        min-width: 150px;
+        padding: 8px 32px 8px 10px;
+        font-size: 13px;
+      }
+
+      .toolbar {
+        display: none;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .dashboard {
+        display: none;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        box-shadow: 0 8px 28px rgba(22, 32, 51, 0.05);
+      }
+
+      .stat {
+        padding: 16px 18px;
+      }
+
+      .label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .value {
+        margin-top: 6px;
+        font-size: 24px;
+        font-weight: 750;
+        letter-spacing: -0.02em;
+      }
+
+      .delta {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .delta.good {
+        color: var(--debate);
+      }
+
+      .delta.bad {
+        color: var(--bad);
+      }
+
+      .section {
+        padding: 18px;
+        margin-bottom: 14px;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+      }
+
+      .chart {
+        width: 100%;
+        min-height: 280px;
+        overflow: hidden;
+      }
+
+      svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .axis,
+      .gridline {
+        stroke: var(--line);
+        stroke-width: 1;
+      }
+
+      .tick,
+      .axis-label,
+      .bar-label {
+        fill: var(--muted);
+        font-size: 11px;
+      }
+
+      .bar-label {
+        fill: var(--text);
+        font-weight: 650;
+      }
+
+      .product-label {
+        fill: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        min-width: 940px;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        padding: 10px 8px;
+        border-bottom: 1px solid var(--line);
+        text-align: right;
+        vertical-align: middle;
+        white-space: nowrap;
+      }
+
+      th:first-child,
+      td:first-child,
+      th:nth-child(2),
+      td:nth-child(2) {
+        text-align: left;
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 650;
+        background: var(--panel-soft);
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 52px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: var(--panel-soft);
+        border: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .pill.warn {
+        border-color: rgba(217, 119, 6, 0.35);
+        background: rgba(217, 119, 6, 0.12);
+        color: var(--warn);
+      }
+
+      .pill.bad {
+        border-color: rgba(192, 57, 43, 0.35);
+        background: rgba(192, 57, 43, 0.12);
+        color: var(--bad);
+      }
+
+      .empty {
+        display: none;
+        padding: 26px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .error {
+        display: none;
+        margin-top: 14px;
+        color: var(--bad);
+        font-size: 13px;
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      @media (max-width: 920px) {
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .toolbar {
+          grid-template-columns: 1fr;
+        }
+
+        .controls {
+          justify-content: flex-start;
+        }
+
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 560px) {
+        main {
+          width: min(100vw - 20px, 1220px);
+          margin-top: 14px;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .section {
+          padding: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <h1>FDM Product Benchmark Viewer</h1>
+        <span id="header-sub">outputs/product_benchmark.json</span>
+      </div>
+      <div class="meta-line" id="run-meta">JSON 파일을 불러오세요</div>
+    </header>
+
+    <main>
+      <label id="drop-zone" for="file-input">
+        <input id="file-input" type="file" accept=".json,application/json" />
+        <span>
+          <strong>product_benchmark.json 업로드</strong>
+          <p>
+            파일을 이 영역에 드롭하거나 클릭해서 선택하세요.<br />
+            HTTP 서버에서 열면 <span class="mono">outputs/product_benchmark.json</span>을 자동으로 시도합니다.
+          </p>
+          <p class="error" id="error"></p>
+        </span>
+      </label>
+
+      <div class="toolbar" id="toolbar">
+        <div class="meta-line" id="source-line"></div>
+        <div class="controls">
+          <select id="category-filter" aria-label="상품군 필터"></select>
+          <button id="reload-btn" type="button">JSON 다시 선택</button>
+          <button id="csv-btn" class="primary" type="button">CSV 내보내기</button>
+        </div>
+      </div>
+
+      <section class="dashboard" id="dashboard">
+        <div class="grid" id="stats"></div>
+
+        <section class="card section">
+          <div class="section-head">
+            <h2>상품별 가입률 비교</h2>
+            <div class="legend">
+              <span class="legend-item"><span class="swatch" style="background: var(--single)"></span>single</span>
+              <span class="legend-item"><span class="swatch" style="background: var(--debate)"></span>debate</span>
+            </div>
+          </div>
+          <div class="chart" id="adoption-chart"></div>
+        </section>
+
+        <section class="card section">
+          <div class="section-head">
+            <h2>KOSIS 보유율 대조</h2>
+            <div class="legend">
+              <span class="legend-item"><span class="swatch" style="background: var(--single-soft); border: 1px solid var(--single)"></span>single MAE</span>
+              <span class="legend-item"><span class="swatch" style="background: var(--debate-soft); border: 1px solid var(--debate)"></span>debate MAE</span>
+            </div>
+          </div>
+          <div class="chart" id="validity-chart"></div>
+        </section>
+
+        <section class="card section">
+          <div class="section-head">
+            <h2>상세 표</h2>
+            <div class="meta-line" id="row-count"></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>상품</th>
+                  <th>상품군</th>
+                  <th>single 가입률</th>
+                  <th>debate 가입률</th>
+                  <th>Δ가입률</th>
+                  <th>single 의향</th>
+                  <th>debate 의향</th>
+                  <th>debate fail</th>
+                  <th>debate 저신뢰</th>
+                  <th>single MAE</th>
+                  <th>debate MAE</th>
+                  <th>debate ρ</th>
+                  <th>합성 폴백</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="empty" id="empty">선택한 상품군에 해당하는 결과가 없습니다.</div>
+      </section>
+    </main>
+
+    <script>
+      const state = {
+        report: null,
+        rows: [],
+        category: "ALL",
+      };
+
+      const els = {
+        drop: document.getElementById("drop-zone"),
+        file: document.getElementById("file-input"),
+        error: document.getElementById("error"),
+        toolbar: document.getElementById("toolbar"),
+        dashboard: document.getElementById("dashboard"),
+        stats: document.getElementById("stats"),
+        adoption: document.getElementById("adoption-chart"),
+        validity: document.getElementById("validity-chart"),
+        rows: document.getElementById("rows"),
+        filter: document.getElementById("category-filter"),
+        rowCount: document.getElementById("row-count"),
+        empty: document.getElementById("empty"),
+        source: document.getElementById("source-line"),
+        runMeta: document.getElementById("run-meta"),
+        headerSub: document.getElementById("header-sub"),
+        reload: document.getElementById("reload-btn"),
+        csv: document.getElementById("csv-btn"),
+      };
+
+      els.drop.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        els.drop.classList.add("drag-over");
+      });
+
+      els.drop.addEventListener("dragleave", () => {
+        els.drop.classList.remove("drag-over");
+      });
+
+      els.drop.addEventListener("drop", (event) => {
+        event.preventDefault();
+        els.drop.classList.remove("drag-over");
+        const file = event.dataTransfer.files[0];
+        if (file) readFile(file);
+      });
+
+      els.file.addEventListener("change", (event) => {
+        const file = event.target.files[0];
+        if (file) readFile(file);
+      });
+
+      els.reload.addEventListener("click", () => els.file.click());
+      els.filter.addEventListener("change", () => {
+        state.category = els.filter.value;
+        render();
+      });
+      els.csv.addEventListener("click", exportCsv);
+
+      window.addEventListener("resize", debounce(render, 120));
+
+      tryAutoLoad();
+
+      function tryAutoLoad() {
+        if (location.protocol === "file:") return;
+        fetch("outputs/product_benchmark.json", { cache: "no-store" })
+          .then((res) => {
+            if (!res.ok) throw new Error("not found");
+            return res.json();
+          })
+          .then((json) => loadReport(json, "outputs/product_benchmark.json"))
+          .catch(() => {});
+      }
+
+      function readFile(file) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            loadReport(JSON.parse(reader.result), file.name);
+          } catch (error) {
+            showError("JSON을 읽지 못했습니다: " + error.message);
+          }
+        };
+        reader.readAsText(file, "utf-8");
+      }
+
+      function loadReport(report, sourceName) {
+        if (!report || !Array.isArray(report.rows)) {
+          showError("product_benchmark.json 형식이 아닙니다. 최상위 rows 배열이 필요합니다.");
+          return;
+        }
+        state.report = report;
+        state.rows = report.rows.map(normalizeRow);
+        state.category = "ALL";
+        els.error.style.display = "none";
+        els.drop.style.display = "none";
+        els.toolbar.style.display = "grid";
+        els.dashboard.style.display = "block";
+        els.source.textContent = sourceName + " · " + state.rows.length + " products";
+        els.headerSub.textContent = sourceName;
+        els.runMeta.textContent = [
+          report.generated_at,
+          report.backend ? "backend=" + report.backend : null,
+          report.n_seeds ? "seeds=" + report.n_seeds : null,
+          report.personas_per_segment ? "k=" + report.personas_per_segment : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        buildCategoryFilter();
+        render();
+      }
+
+      function normalizeRow(row) {
+        return {
+          product_id: row.product_id || "",
+          product_name: row.product_name || row.product_id || "-",
+          category: row.category || "-",
+          n_segments: num(row.n_segments),
+          persona_pool_size: num(row.persona_pool_size),
+          persona_nemotron_count: num(row.persona_nemotron_count),
+          persona_synthetic_count: num(row.persona_synthetic_count),
+          single_adoption_rate: opt(row.single_adoption_rate),
+          debate_adoption_rate: opt(row.debate_adoption_rate),
+          delta_adoption_rate_vs_single: opt(row.delta_adoption_rate_vs_single),
+          single_mean_intent: opt(row.single_mean_intent),
+          debate_mean_intent: opt(row.debate_mean_intent),
+          delta_intent_vs_single: opt(row.delta_intent_vs_single),
+          single_fail_ratio: opt(row.single_fail_ratio),
+          debate_fail_ratio: opt(row.debate_fail_ratio),
+          single_low_confidence_ratio: opt(row.single_low_confidence_ratio),
+          debate_low_confidence_ratio: opt(row.debate_low_confidence_ratio),
+          single_holding_mae: opt(row.single_holding_mae),
+          debate_holding_mae: opt(row.debate_holding_mae),
+          delta_mae_vs_single: opt(row.delta_mae_vs_single),
+          single_holding_spearman: opt(row.single_holding_spearman),
+          debate_holding_spearman: opt(row.debate_holding_spearman),
+          delta_spearman_vs_single: opt(row.delta_spearman_vs_single),
+        };
+      }
+
+      function buildCategoryFilter() {
+        const cats = ["ALL", ...Array.from(new Set(state.rows.map((r) => r.category))).sort()];
+        els.filter.innerHTML = "";
+        cats.forEach((cat) => {
+          const option = document.createElement("option");
+          option.value = cat;
+          option.textContent = cat === "ALL" ? "전체 상품군" : cat;
+          els.filter.appendChild(option);
+        });
+      }
+
+      function render() {
+        if (!state.report) return;
+        const rows =
+          state.category === "ALL"
+            ? state.rows
+            : state.rows.filter((row) => row.category === state.category);
+        els.empty.style.display = rows.length ? "none" : "block";
+        renderStats(rows);
+        renderAdoption(rows);
+        renderValidity(rows);
+        renderTable(rows);
+      }
+
+      function renderStats(rows) {
+        const avgDebate = mean(rows.map((r) => r.debate_adoption_rate).filter(isNumber));
+        const avgSingle = mean(rows.map((r) => r.single_adoption_rate).filter(isNumber));
+        const avgDelta = isNumber(avgDebate) && isNumber(avgSingle) ? avgDebate - avgSingle : null;
+        const fail = mean(rows.map((r) => r.debate_fail_ratio).filter(isNumber));
+        const low = mean(rows.map((r) => r.debate_low_confidence_ratio).filter(isNumber));
+        const synth = rows.reduce((sum, row) => sum + row.persona_synthetic_count, 0);
+        const totalPool = rows.reduce((sum, row) => sum + row.persona_pool_size, 0);
+        const cards = [
+          ["상품 수", rows.length.toLocaleString(), state.category === "ALL" ? "전체 상품군" : state.category],
+          ["평균 debate 가입률", pct(avgDebate), "single 대비 " + signedPct(avgDelta), avgDelta],
+          ["평균 debate fail", pct(fail), "판매원칙 위험 비율"],
+          ["데이터 출처", totalPool ? pct(synth / totalPool) : "n/a", "합성 폴백 비중"],
+        ];
+        els.stats.innerHTML = cards
+          .map(([label, value, delta, signal]) => {
+            const cls = signal == null ? "" : signal >= 0 ? "good" : "bad";
+            return `<article class="card stat"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div><div class="delta ${cls}">${escapeHtml(delta)}</div></article>`;
+          })
+          .join("");
+      }
+
+      function renderAdoption(rows) {
+        if (!rows.length) {
+          els.adoption.innerHTML = "";
+          return;
+        }
+        const width = Math.max(760, els.adoption.clientWidth || 960);
+        const rowH = 54;
+        const margin = { top: 24, right: 70, bottom: 28, left: 190 };
+        const height = margin.top + margin.bottom + rows.length * rowH;
+        const plotW = width - margin.left - margin.right;
+        const x = (v) => margin.left + clamp(v || 0, 0, 1) * plotW;
+        const y = (i) => margin.top + i * rowH;
+        const ticks = [0, 0.25, 0.5, 0.75, 1];
+        const parts = [
+          `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="상품별 single debate 가입률 비교">`,
+          ...ticks.map(
+            (t) =>
+              `<line class="gridline" x1="${x(t)}" y1="${margin.top - 10}" x2="${x(t)}" y2="${height - margin.bottom + 6}"></line><text class="tick" x="${x(t)}" y="${height - 8}" text-anchor="middle">${Math.round(t * 100)}%</text>`,
+          ),
+        ];
+        rows.forEach((row, i) => {
+          const yy = y(i);
+          parts.push(
+            `<text class="product-label" x="0" y="${yy + 22}">${escapeSvg(shortName(row.product_name, 24))}</text>`,
+          );
+          parts.push(bar(x(0), yy + 8, x(row.single_adoption_rate) - x(0), 14, "var(--single)", pct(row.single_adoption_rate)));
+          parts.push(bar(x(0), yy + 28, x(row.debate_adoption_rate) - x(0), 14, "var(--debate)", pct(row.debate_adoption_rate)));
+          parts.push(
+            `<text class="bar-label" x="${Math.min(width - 8, x(Math.max(row.single_adoption_rate || 0, row.debate_adoption_rate || 0)) + 8)}" y="${yy + 40}">${signedPct(row.delta_adoption_rate_vs_single)}</text>`,
+          );
+        });
+        parts.push("</svg>");
+        els.adoption.innerHTML = parts.join("");
+      }
+
+      function renderValidity(rows) {
+        if (!rows.length) {
+          els.validity.innerHTML = "";
+          return;
+        }
+        const width = Math.max(760, els.validity.clientWidth || 960);
+        const rowH = 58;
+        const margin = { top: 24, right: 84, bottom: 28, left: 190 };
+        const height = margin.top + margin.bottom + rows.length * rowH;
+        const plotW = width - margin.left - margin.right;
+        const x01 = (v) => margin.left + clamp(v || 0, 0, 1) * plotW;
+        const y = (i) => margin.top + i * rowH;
+        const parts = [
+          `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="KOSIS 보유율 대조 MAE 비교">`,
+          ...[0, 0.25, 0.5, 0.75, 1].map(
+            (t) =>
+              `<line class="gridline" x1="${x01(t)}" y1="${margin.top - 10}" x2="${x01(t)}" y2="${height - margin.bottom + 6}"></line><text class="tick" x="${x01(t)}" y="${height - 8}" text-anchor="middle">${t.toFixed(2)}</text>`,
+          ),
+        ];
+        rows.forEach((row, i) => {
+          const yy = y(i);
+          parts.push(
+            `<text class="product-label" x="0" y="${yy + 24}">${escapeSvg(shortName(row.product_name, 24))}</text>`,
+          );
+          parts.push(bar(x01(0), yy + 8, x01(row.single_holding_mae) - x01(0), 13, "var(--single-soft)", "s MAE " + numFmt(row.single_holding_mae), "var(--single)"));
+          parts.push(bar(x01(0), yy + 24, x01(row.debate_holding_mae) - x01(0), 13, "var(--debate-soft)", "d MAE " + numFmt(row.debate_holding_mae), "var(--debate)"));
+          parts.push(
+            `<text class="bar-label" x="${width - 4}" y="${yy + 48}" text-anchor="end">debate ρ ${numFmt(row.debate_holding_spearman)}</text>`,
+          );
+        });
+        parts.push("</svg>");
+        els.validity.innerHTML = parts.join("");
+      }
+
+      function bar(x, y, w, h, fill, label, stroke) {
+        const width = Math.max(0, w);
+        const textX = Math.min(x + width + 6, x + Math.max(width - 4, 24));
+        const inside = width > 74;
+        return [
+          `<rect x="${x}" y="${y}" width="${width}" height="${h}" rx="4" fill="${fill}" ${stroke ? `stroke="${stroke}"` : ""}></rect>`,
+          `<text class="bar-label" x="${inside ? x + width - 6 : textX}" y="${y + h - 3}" text-anchor="${inside ? "end" : "start"}">${escapeSvg(label)}</text>`,
+        ].join("");
+      }
+
+      function renderTable(rows) {
+        els.rowCount.textContent = rows.length + " rows";
+        els.rows.innerHTML = rows
+          .map((r) => {
+            const synthCls = r.persona_synthetic_count > 0 ? "bad" : "";
+            const failCls = (r.debate_fail_ratio || 0) >= 0.3 ? "bad" : (r.debate_fail_ratio || 0) >= 0.15 ? "warn" : "";
+            return `<tr>
+              <td>${escapeHtml(r.product_name)}<div class="meta-line mono">${escapeHtml(r.product_id)}</div></td>
+              <td>${escapeHtml(r.category)}</td>
+              <td>${pct(r.single_adoption_rate)}</td>
+              <td>${pct(r.debate_adoption_rate)}</td>
+              <td>${signedPct(r.delta_adoption_rate_vs_single)}</td>
+              <td>${numFmt(r.single_mean_intent)}</td>
+              <td>${numFmt(r.debate_mean_intent)}</td>
+              <td><span class="pill ${failCls}">${pct(r.debate_fail_ratio)}</span></td>
+              <td>${pct(r.debate_low_confidence_ratio)}</td>
+              <td>${numFmt(r.single_holding_mae)}</td>
+              <td>${numFmt(r.debate_holding_mae)}</td>
+              <td>${numFmt(r.debate_holding_spearman)}</td>
+              <td><span class="pill ${synthCls}">${r.persona_synthetic_count}</span></td>
+            </tr>`;
+          })
+          .join("");
+      }
+
+      function exportCsv() {
+        const rows =
+          state.category === "ALL"
+            ? state.rows
+            : state.rows.filter((row) => row.category === state.category);
+        const headers = [
+          "product_id",
+          "product_name",
+          "category",
+          "single_adoption_rate",
+          "debate_adoption_rate",
+          "delta_adoption_rate_vs_single",
+          "single_mean_intent",
+          "debate_mean_intent",
+          "debate_fail_ratio",
+          "debate_low_confidence_ratio",
+          "single_holding_mae",
+          "debate_holding_mae",
+          "debate_holding_spearman",
+          "persona_synthetic_count",
+        ];
+        const csv = [
+          headers.join(","),
+          ...rows.map((row) =>
+            headers.map((key) => JSON.stringify(row[key] == null ? "" : row[key])).join(","),
+          ),
+        ].join("\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "product_benchmark_view.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function showError(message) {
+        els.error.textContent = message;
+        els.error.style.display = "block";
+      }
+
+      function pct(v) {
+        return isNumber(v) ? (v * 100).toFixed(1) + "%" : "n/a";
+      }
+
+      function signedPct(v) {
+        return isNumber(v) ? (v >= 0 ? "+" : "") + (v * 100).toFixed(1) + "%" : "n/a";
+      }
+
+      function numFmt(v) {
+        return isNumber(v) ? Number(v).toFixed(3) : "n/a";
+      }
+
+      function mean(values) {
+        return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+      }
+
+      function opt(value) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      function num(value) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : 0;
+      }
+
+      function isNumber(value) {
+        return typeof value === "number" && Number.isFinite(value);
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function shortName(value, max) {
+        return value.length > max ? value.slice(0, max - 1) + "…" : value;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function escapeSvg(value) {
+        return escapeHtml(value);
+      }
+
+      function debounce(fn, delay) {
+        let timer;
+        return () => {
+          clearTimeout(timer);
+          timer = setTimeout(fn, delay);
+        };
+      }
+    </script>
+  </body>
+</html>

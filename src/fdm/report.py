@@ -28,6 +28,16 @@ def build_report(
         f"\n- 실행환경: backend=`{sim.backend}`, 토론모델=`{sim.model_small}`, 심판모델=`{sim.model_judge}`"
         f"\n- 모드: {sim.mode} / 멀티시드: {sim.n_seeds}회"
     )
+    if sim.persona_pool_size:
+        L.append(
+            f"\n- 페르소나 풀: 총 {sim.persona_pool_size}명 / "
+            f"Nemotron {sim.persona_nemotron_count}명 / 합성 폴백 {sim.persona_synthetic_count}명"
+        )
+    if sim.persona_source_counts:
+        L.append(
+            "\n- 페르소나 출처 상세: "
+            + ", ".join(f"`{src}` {n}명" for src, n in sim.persona_source_counts.items())
+        )
 
     L.append("\n## 1. 요약 판정")
     risky = [s for s in sim.segments if s.verdict_mix.get("fail", 0) >= 0.3]
@@ -134,7 +144,7 @@ def build_report(
 
     L.append("\n## 8. 한계 (정직한 고지)")
     L += [
-        "- 합성 페르소나(Nemotron-Personas-Korea)는 개별 변수 분포는 실제와 정합하나 변수 조합(joint distribution) 정합성은 검증되지 않았다. 본 결과는 **탐색·경보용**이며 확정 근거로 쓸 수 없다.",
+        "- Nemotron-Personas-Korea는 공개 합성 페르소나 데이터셋이다. 실제 개인 데이터가 아니며, 변수 조합(joint distribution) 정합성은 별도 검증이 필요하다. 본 결과는 **탐색·경보용**이며 확정 근거로 쓸 수 없다.",
         "- 디베이트는 LLM의 내적 충실성을 높이지만 외적 타당성(실제 시장 일치)을 자동 보장하지 않는다. 반드시 실데이터·조정례와 병용해야 한다.",
         "- 본 도구는 상품기획팀용 세그먼트 설계·검증 도구다. 개별 소비자에 대한 상품 추천·판매권유가 아니다.",
         "- 재무 프로파일 수치는 가계금융복지조사 분포에서 합성한 값으로 실제 개인이 아니다.",

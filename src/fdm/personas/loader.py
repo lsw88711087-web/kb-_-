@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import json
 import random
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Literal
 
 from ..config import PERSONA_DIR
 from .finance import attach_finance, load_kosis_params
 from .schema import Persona, Segment
 
 HF_DATASET = "nvidia/Nemotron-Personas-Korea"
+PersonaSource = Literal["auto", "jsonl", "hf", "synthetic"]
+SYNTHETIC_SOURCE = "synthetic-fallback"
 
 # Nemotron 컬럼명 → Persona 필드 (데이터셋 버전차를 흡수하기 위해 후보 리스트로 둔다)
 FIELD_CANDIDATES = {
@@ -78,7 +82,7 @@ def _to_int(v: object, default: int) -> int:
         return default
 
 
-def row_to_persona(row: dict, idx: int) -> Persona | None:
+def row_to_persona(row: dict, idx: int, *, source: str | None = None) -> Persona | None:
     age = _to_int(_first(row, FIELD_CANDIDATES["age"]), -1)
     if age < 19 or age > 95:  # 성인 대상 상품 검증이므로 미성년 제외
         return None
@@ -106,19 +110,26 @@ def row_to_persona(row: dict, idx: int) -> Persona | None:
         ),
         persona_text=str(_first(row, TEXT_CANDIDATES) or ""),
         traits=traits[:6],
+        source=source or str(row.get("source") or HF_DATASET),
     )
 
 
 # ------------------------------------------------------------------- 소스별 로드
 def load_from_jsonl(path: Path) -> list[Persona]:
     out: list[Persona] = []
+    cache_source = f"{HF_DATASET} (local-cache:{path.name})"
     with open(path, encoding="utf-8") as f:
         for i, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
             row = json.loads(line)
-            p = Persona(**row) if "persona_id" in row else row_to_persona(row, i)
+            if "persona_id" in row:
+                p = Persona(**row)
+                if p.source.startswith(HF_DATASET) and "local-cache:" not in p.source:
+                    p = p.model_copy(update={"source": f"{p.source}; local-cache:{path.name}"})
+            else:
+                p = row_to_persona(row, i, source=cache_source)
             if p:
                 out.append(p)
     return out
@@ -130,7 +141,7 @@ def load_from_hf(limit: int = 5000) -> list[Persona]:
     ds = load_dataset(HF_DATASET, split=f"train[:{limit}]")
     out = []
     for i, row in enumerate(ds):
-        p = row_to_persona(dict(row), i)
+        p = row_to_persona(dict(row), i, source=f"{HF_DATASET} (huggingface)")
         if p:
             out.append(p)
     return out
@@ -179,30 +190,77 @@ def synthesize(n: int = 400, seed: int = 42) -> list[Persona]:
             household_size=rng.choice([1, 1, 2, 2, 3, 3, 4]),
             persona_text=f"{age}세 {occ}. 금융상품 선택 시 {rng.choice(['안정성', '수익률', '편의성', '수수료'])}을 가장 중시한다.",
             traits=[rng.choice(["보수적 투자성향", "적극적 투자성향", "디지털 친화", "대면 채널 선호", "가격 민감"])],
-            source="synthetic-fallback (Nemotron 미설치)",
+            source=f"{SYNTHETIC_SOURCE} (Nemotron 미설치)",
         )
         out.append(p)
     return out
 
 
+def is_nemotron_persona(p: Persona) -> bool:
+    """공개 Nemotron-Personas-Korea 레코드에서 온 페르소나인지 확인."""
+    return p.source.startswith(HF_DATASET)
+
+
+def persona_source_counts(personas: Iterable[Persona]) -> dict[str, int]:
+    """리포트/doctor에서 쓸 출처별 건수."""
+    return dict(Counter(p.source for p in personas))
+
+
+def require_nemotron_personas(personas: Iterable[Persona]) -> None:
+    """합성 폴백이 섞였으면 명시적으로 실패시킨다."""
+    items = list(personas)
+    if not items:
+        raise RuntimeError("페르소나가 0명이다. 데이터 로딩 또는 세그먼트 조건을 확인해야 한다.")
+    bad = [p.source for p in items if not is_nemotron_persona(p)]
+    if bad:
+        sample = ", ".join(sorted(set(bad))[:3])
+        raise RuntimeError(
+            "Nemotron-Personas-Korea 데이터가 아닌 페르소나가 포함되어 있다. "
+            f"출처 예시: {sample}. Colab에서는 `python scripts/fetch_personas.py --limit 5000` "
+            "또는 `--persona-source hf --require-real-personas`로 다시 실행하라."
+        )
+
+
 def load_personas(
     *,
-    source: str = "auto",
+    source: PersonaSource = "auto",
     limit: int = 2000,
     with_finance: bool = True,
+    allow_synthetic_fallback: bool | None = None,
 ) -> list[Persona]:
+    if allow_synthetic_fallback is None:
+        allow_synthetic_fallback = source == "auto"
+
     personas: list[Persona] = []
     files = sorted(PERSONA_DIR.glob("*.jsonl")) if PERSONA_DIR.exists() else []
+    failures: list[str] = []
 
-    if source in {"auto", "jsonl"} and files:
+    if source == "synthetic":
+        personas = synthesize(n=min(limit, 400))
+    elif source in {"auto", "jsonl"} and files:
         for f in files:
             personas.extend(load_from_jsonl(f))
+    elif source == "jsonl" and not allow_synthetic_fallback:
+        raise RuntimeError(
+            f"{PERSONA_DIR} 아래에 persona jsonl 캐시가 없다. "
+            "`python scripts/fetch_personas.py --limit 5000`로 먼저 저장하라."
+        )
+
     if not personas and source in {"auto", "hf"}:
         try:
             personas = load_from_hf(limit=limit)
-        except Exception:
-            personas = []
+        except Exception as e:
+            failures.append(f"Hugging Face 로딩 실패: {e}")
+            if source == "hf" and not allow_synthetic_fallback:
+                raise RuntimeError(
+                    "Nemotron-Personas-Korea를 Hugging Face에서 불러오지 못했다. "
+                    "`uv sync --extra personas` 또는 Colab의 `pip install datasets pyarrow`와 "
+                    "네트워크 권한을 확인하라."
+                ) from e
     if not personas:
+        if not allow_synthetic_fallback:
+            detail = " / ".join(failures) if failures else "사용 가능한 페르소나 소스가 없다."
+            raise RuntimeError(detail)
         personas = synthesize(n=min(limit, 400))
 
     personas = personas[:limit]

@@ -12,7 +12,12 @@ from rich.table import Table
 
 from .agents.debate import DebateConfig, run_debate
 from .config import OUTPUT_DIR, SETTINGS
-from .eval.benchmark import compare_holding_rates, run_ablation
+from .eval.benchmark import (
+    build_product_benchmark_markdown,
+    compare_holding_rates,
+    run_ablation,
+    run_product_benchmark,
+)
 from .eval.simulate import (
     SimulationReport,
     default_variants,
@@ -21,7 +26,14 @@ from .eval.simulate import (
     simulate_product,
 )
 from .llm import LLMClient, LLMError
-from .personas.loader import filter_segment, load_personas, sample_cohort
+from .personas.loader import (
+    PersonaSource,
+    filter_segment,
+    load_personas,
+    persona_source_counts,
+    require_nemotron_personas,
+    sample_cohort,
+)
 from .products.schema import load_all_products, load_product
 from .report import build_report, save_report
 
@@ -36,10 +48,43 @@ for _stream in (sys.stdout, sys.stderr):
 
 app = typer.Typer(add_completion=False, help="합성 페르소나 기반 금융상품 설계·검증 에이전트")
 console = Console()
+PERSONA_SOURCES = {"auto", "jsonl", "hf", "synthetic"}
+MODES = {"single", "debate"}
+
+
+def _persona_source(value: str) -> PersonaSource:
+    if value not in PERSONA_SOURCES:
+        console.print(f"[red]persona-source는 {', '.join(sorted(PERSONA_SOURCES))} 중 하나여야 한다[/]")
+        raise typer.Exit(1)
+    return value  # type: ignore[return-value]
+
+
+def _load_personas_for_cli(
+    *,
+    source: str = "auto",
+    limit: int = 2000,
+    require_real: bool = False,
+):
+    personas = load_personas(
+        source=_persona_source(source),
+        limit=limit,
+        allow_synthetic_fallback=not require_real,
+    )
+    if require_real:
+        require_nemotron_personas(personas)
+    return personas
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    persona_source: str = typer.Option(
+        "auto", help="auto | jsonl | hf | synthetic. hf/jsonl은 명시 로딩 검증용"
+    ),
+    require_real_personas: bool = typer.Option(
+        False, help="합성 폴백이 섞이면 실패시킨다"
+    ),
+    persona_limit: int = typer.Option(2000, help="점검할 페르소나 로드 수"),
+) -> None:
     """실행 환경 점검 (백엔드 연결, 데이터 로딩)."""
     console.print(f"backend=[bold]{SETTINGS.backend}[/] base_url={SETTINGS.base_url}")
     console.print(f"토론모델={SETTINGS.model_small} / 심판모델={SETTINGS.model_judge}")
@@ -52,14 +97,24 @@ def doctor() -> None:
         console.print(f"[red]LLM 실패[/]: {e}")
 
     products = load_all_products()
-    personas = load_personas()
+    try:
+        personas = _load_personas_for_cli(
+            source=persona_source,
+            limit=persona_limit,
+            require_real=require_real_personas,
+        )
+    except RuntimeError as e:
+        console.print(f"[red]페르소나 로딩 실패[/]: {e}")
+        raise typer.Exit(1) from e
     from .rag.corpus import load_corpus
 
     docs = load_corpus()
+    sources = persona_source_counts(personas)
     console.print(
         f"상품 {len(products)}건 / 페르소나 {len(personas)}명 "
         f"(출처: {personas[0].source if personas else '-'}) / RAG 문서 {len(docs)}건"
     )
+    console.print("페르소나 출처 상세: " + ", ".join(f"{k}={v}" for k, v in sources.items()))
 
 
 @app.command("products")
@@ -75,9 +130,17 @@ def products_cmd() -> None:
 
 
 @app.command("segments")
-def segments_cmd(limit: int = 2000) -> None:
+def segments_cmd(
+    limit: int = 2000,
+    persona_source: str = typer.Option("auto", help="auto | jsonl | hf | synthetic"),
+    require_real_personas: bool = typer.Option(False, help="합성 폴백이 섞이면 실패"),
+) -> None:
     """세그먼트별 페르소나 수 및 평균 재무지표."""
-    personas = load_personas(limit=limit)
+    personas = _load_personas_for_cli(
+        source=persona_source,
+        limit=limit,
+        require_real=require_real_personas,
+    )
     t = Table("세그먼트", "인원", "평균 연소득(만원)", "평균 DSR(%)", "평균 월여유(만원)")
     for seg in load_segments():
         pool = filter_segment(personas, seg)
@@ -101,12 +164,17 @@ def debate(
     segment: Optional[str] = typer.Option(None, help="세그먼트명 (기본: 상품의 첫 타깃)"),
     seed: int = 0,
     full: bool = typer.Option(False, help="전체 발화 출력"),
+    persona_source: str = typer.Option("auto", help="auto | jsonl | hf | synthetic"),
+    require_real_personas: bool = typer.Option(False, help="합성 폴백이 섞이면 실패"),
 ) -> None:
     """단일 페르소나 디베이트 1회 실행 (프롬프트 확인용)."""
     prod = load_product(product)
     seg_name = segment or (prod.target_segments[0] if prod.target_segments else "청년_사회초년생")
     seg = load_segments([seg_name])[0]
-    personas = load_personas()
+    personas = _load_personas_for_cli(
+        source=persona_source,
+        require_real=require_real_personas,
+    )
     cohort = sample_cohort(personas, seg, 1)
     if not cohort:
         console.print(f"[red]세그먼트 {seg_name}에 해당하는 페르소나가 없다[/]")
@@ -137,6 +205,8 @@ def simulate(
     segments: Optional[str] = typer.Option(None, help="쉼표구분 세그먼트명"),
     with_ablation: bool = typer.Option(False, help="애블레이션도 함께 실행"),
     with_sensitivity: bool = typer.Option(False, help="민감도 분석도 함께 실행"),
+    persona_source: str = typer.Option("auto", help="auto | jsonl | hf | synthetic"),
+    require_real_personas: bool = typer.Option(False, help="합성 폴백이 섞이면 실패"),
 ) -> None:
     """상품을 세그먼트 전반에 시뮬레이션하고 검증 리포트를 생성한다."""
     prod = load_product(product)
@@ -149,6 +219,8 @@ def simulate(
         n_seeds=seeds,
         mode=mode,  # type: ignore[arg-type]
         workers=workers,
+        persona_source=_persona_source(persona_source),
+        require_real_personas=require_real_personas,
     )
     path = sim.save()
     console.print(f"시뮬레이션 결과 저장: {path}")
@@ -160,6 +232,8 @@ def simulate(
             prod, default_variants(prod), segment_names=seg_names,
             k_personas=max(2, personas_per_segment // 2), n_seeds=max(1, seeds - 1),
             mode=mode, workers=workers,  # type: ignore[arg-type]
+            persona_source=_persona_source(persona_source),
+            require_real_personas=require_real_personas,
         )
         (OUTPUT_DIR / f"sensitivity_{prod.product_id}.json").write_text(
             json.dumps([r.model_dump() for r in sens], ensure_ascii=False, indent=2), encoding="utf-8"
@@ -175,6 +249,68 @@ def simulate(
     text = build_report(prod, sim, ablation=abl, holding=holding, sensitivity=sens)
     rpath = save_report(text, prod.product_id)
     console.print(f"[green]리포트 생성[/]: {rpath}")
+
+
+@app.command("benchmark-products")
+def benchmark_products_cmd(
+    products: Optional[str] = typer.Option(
+        None, help="쉼표구분 상품 파일명/경로. 비우면 data/products/*.json 전체"
+    ),
+    seeds: int = typer.Option(2, help="멀티시드 반복 횟수"),
+    personas_per_segment: int = typer.Option(3),
+    persona_limit: int = typer.Option(2000, help="로드할 페르소나 풀 크기"),
+    workers: int = typer.Option(4),
+    modes: str = typer.Option("single,debate", help="single,debate 중 쉼표구분"),
+    segments: Optional[str] = typer.Option(None, help="쉼표구분 세그먼트명"),
+    persona_source: str = typer.Option("auto", help="auto | jsonl | hf | synthetic"),
+    require_real_personas: bool = typer.Option(False, help="합성 폴백이 섞이면 실패"),
+    with_ablation: bool = typer.Option(True, help="분쟁조정 정답셋 애블레이션도 함께 저장"),
+) -> None:
+    """여러 상품을 single 대조군과 debate 실험군으로 일괄 비교한다."""
+    prods = (
+        [load_product(p.strip()) for p in products.split(",") if p.strip()]
+        if products
+        else load_all_products()
+    )
+    parsed_modes = tuple(m.strip() for m in modes.split(",") if m.strip())
+    bad_modes = [m for m in parsed_modes if m not in MODES]
+    if bad_modes:
+        console.print(f"[red]지원하지 않는 mode: {', '.join(bad_modes)}[/]")
+        raise typer.Exit(1)
+    seg_names = [s.strip() for s in segments.split(",")] if segments else None
+
+    rep = run_product_benchmark(
+        prods,
+        modes=parsed_modes,  # type: ignore[arg-type]
+        n_seeds=seeds,
+        k_personas=personas_per_segment,
+        persona_limit=persona_limit,
+        workers=workers,
+        segment_names=seg_names,
+        persona_source=_persona_source(persona_source),
+        require_real_personas=require_real_personas,
+    )
+    json_path = rep.save()
+    md_path = OUTPUT_DIR / "product_benchmark.md"
+    md_path.write_text(build_product_benchmark_markdown(rep), encoding="utf-8")
+
+    t = Table("상품", "single 가입률", "debate 가입률", "Δ가입률", "debate ρ", "합성 폴백")
+    for r in rep.rows:
+        t.add_row(
+            r.product_name,
+            "-" if r.single_adoption_rate is None else f"{r.single_adoption_rate:.1%}",
+            "-" if r.debate_adoption_rate is None else f"{r.debate_adoption_rate:.1%}",
+            "-" if r.delta_adoption_rate_vs_single is None else f"{r.delta_adoption_rate_vs_single:+.1%}",
+            "-" if r.debate_holding_spearman is None else f"{r.debate_holding_spearman:.3f}",
+            str(r.persona_synthetic_count),
+        )
+    console.print(t)
+    console.print(f"[green]상품 벤치마크 저장[/]: {json_path}")
+    console.print(f"[green]Markdown 리포트 저장[/]: {md_path}")
+
+    if with_ablation:
+        abl = run_ablation(n_seeds=max(1, seeds - 1), progress=False)
+        console.print(f"[green]애블레이션 저장[/]: {abl.save()}")
 
 
 @app.command()

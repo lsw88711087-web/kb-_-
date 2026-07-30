@@ -7,11 +7,11 @@ import pytest
 from fdm.agents.debate import run_debate, single_shot
 from fdm.agents.schema import Verdict, count_citations, is_grounded, normalize_suitability
 from fdm.config import SETTINGS
-from fdm.eval.benchmark import load_cases, run_ablation
+from fdm.eval.benchmark import load_cases, run_ablation, run_product_benchmark
 from fdm.eval.confidence import aggregate
 from fdm.eval.simulate import VariantSpec, apply_variant, load_segments, simulate_product
 from fdm.llm import extract_json
-from fdm.personas.loader import filter_segment, load_personas, sample_cohort
+from fdm.personas.loader import filter_segment, load_personas, persona_source_counts, sample_cohort
 from fdm.products.schema import load_all_products, load_product
 from fdm.rag.retriever import get_retriever
 from fdm.report import build_report
@@ -38,6 +38,13 @@ def test_personas_have_finance(personas):
         assert p.finance.annual_income_manwon > 0
         assert 1 <= p.finance.income_quintile <= 5
         assert p.finance.monthly_income_manwon > 0
+
+
+def test_persona_source_is_reported():
+    ps = load_personas(source="synthetic", limit=10)
+    counts = persona_source_counts(ps)
+    assert sum(counts.values()) == 10
+    assert all(p.source.startswith("synthetic-fallback") for p in ps)
 
 
 def test_finance_is_deterministic():
@@ -161,6 +168,8 @@ def test_simulate_and_report(personas):
         product, k_personas=2, n_seeds=2, mode="debate", workers=2, personas=personas, progress=False
     )
     assert sim.segments
+    assert sim.persona_pool_size == len(personas)
+    assert sim.persona_source_counts
     for s in sim.segments:
         assert 0 <= s.adoption_rate <= 1
         assert abs(sum(s.verdict_mix.values()) - 1.0) < 1e-6
@@ -199,3 +208,24 @@ def test_ablation_smoke():
     assert debate.total_llm_calls > single.total_llm_calls
     for o in next(a for a in rep.arms if a.arm == "single_norag").outcomes:
         assert o.case_id
+
+
+def test_product_benchmark_smoke():
+    products = [load_product("01_youth_step_saving"), load_product("04_cashback_card")]
+    rep = run_product_benchmark(
+        products,
+        n_seeds=1,
+        k_personas=1,
+        persona_limit=80,
+        workers=1,
+        persona_source="synthetic",
+        progress=False,
+        save_simulations=False,
+    )
+    assert rep.n_products == 2
+    assert rep.modes == ["single", "debate"]
+    for row in rep.rows:
+        assert row.single_adoption_rate is not None
+        assert row.debate_adoption_rate is not None
+        assert row.delta_adoption_rate_vs_single is not None
+        assert row.persona_synthetic_count == 80
