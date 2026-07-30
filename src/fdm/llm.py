@@ -187,11 +187,17 @@ class LLMClient:
             return obj
         repair = dict(kwargs)
         repair["user"] = (
-            "다음 텍스트를 유효한 JSON 객체 하나로만 다시 출력하라. 설명·코드펜스 금지.\n\n"
+            "다음 텍스트는 JSON처럼 보이지만 따옴표, 쉼표, 줄바꿈 중 일부가 깨졌을 수 있다. "
+            "원래 의미를 유지해 유효한 JSON 객체 하나로만 다시 출력하라. 설명·코드펜스 금지.\n"
+            "필수 키 예시: 적합성, 가입의향점수, 위반원칙, 근거, 위험요인, 개선권고, confidence, 요약.\n\n"
             + res.text[:4000]
         )
         repair["temperature"] = 0.0
-        obj = extract_json(self.chat(**repair).text)
+        for i in range(2):
+            repair["seed"] = (repair.get("seed") or 0) + 101 + i
+            obj = extract_json(self.chat(**repair).text)
+            if obj is not None:
+                return obj
         if obj is None:
             raise LLMError(f"JSON 파싱 실패: {res.text[:300]}")
         return obj
@@ -218,12 +224,13 @@ def extract_json(text: str) -> dict[str, Any] | None:
     candidates = ([m.group(1)] if m else []) + [text]
     for cand in candidates:
         cand = cand.strip()
-        try:
-            obj = json.loads(cand)
-            if isinstance(obj, dict):
+        obj = _loads_object(cand)
+        if obj is not None:
+            return obj
+        for fixed in _jsonish_repairs(cand):
+            obj = _loads_object(fixed)
+            if obj is not None:
                 return obj
-        except json.JSONDecodeError:
-            pass
         # 중괄호 균형 스캔
         start = cand.find("{")
         while start != -1:
@@ -245,14 +252,83 @@ def extract_json(text: str) -> dict[str, Any] | None:
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        try:
-                            obj = json.loads(cand[start : i + 1])
-                            if isinstance(obj, dict):
+                        snippet = cand[start : i + 1]
+                        obj = _loads_object(snippet)
+                        if obj is not None:
+                            return obj
+                        for fixed in _jsonish_repairs(snippet):
+                            obj = _loads_object(fixed)
+                            if obj is not None:
                                 return obj
-                        except json.JSONDecodeError:
-                            break
+                        break
             start = cand.find("{", start + 1)
     return None
+
+
+def _loads_object(text: str) -> dict[str, Any] | None:
+    try:
+        obj = json.loads(text, strict=False)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _jsonish_repairs(text: str) -> list[str]:
+    """LLM이 자주 만드는 작은 JSON 손상을 로컬에서 보수한다."""
+    base = text.strip()
+    if not base:
+        return []
+    if "{" in base and "}" in base:
+        base = base[base.find("{") : base.rfind("}") + 1]
+
+    variants: list[str] = []
+    lines = []
+    for line in base.splitlines():
+        # `{"적합성: "fail",` 또는 `"적합성: "fail",` 처럼 key 닫는 따옴표가 빠진 경우.
+        line = re.sub(
+            r'(^|[{,\[]\s*)"([^"\n{}[\]]{1,80}?):(\s*)',
+            r'\1"\2":\3',
+            line,
+        )
+        line = re.sub(r'^(\s*)"([^"\n{}[\]]{1,80}?):(\s*)', r'\1"\2":\3', line)
+        # `{ 적합성: "fail" }`처럼 key 따옴표가 통째로 빠진 경우.
+        line = re.sub(
+            r'(^|[{,\[]\s*)([A-Za-z가-힣_][^:\n"{\[\]]{0,60}?)(\s*):',
+            lambda m: f'{m.group(1)}"{m.group(2).strip()}":',
+            line,
+        )
+        lines.append(line)
+    fixed = "\n".join(lines)
+    fixed = re.sub(r",(\s*[}\]])", r"\1", fixed)
+    variants.append(fixed)
+
+    # 출력이 중간에 끊긴 경우 닫는 괄호를 보충해 한 번 더 시도한다.
+    balanced = _balance_json_brackets(fixed)
+    if balanced != fixed:
+        variants.append(balanced)
+    return variants
+
+
+def _balance_json_brackets(text: str) -> str:
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+    return text + "".join(reversed(stack))
 
 
 # ----------------------------------------------------------------- mock backend

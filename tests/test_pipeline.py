@@ -9,8 +9,8 @@ from fdm.agents.schema import Verdict, count_citations, is_grounded, normalize_s
 from fdm.config import SETTINGS
 from fdm.eval.benchmark import load_cases, run_ablation, run_product_benchmark
 from fdm.eval.confidence import aggregate
-from fdm.eval.simulate import VariantSpec, apply_variant, load_segments, simulate_product
-from fdm.llm import extract_json
+from fdm.eval.simulate import VariantSpec, apply_variant, load_segments, run_case, simulate_product
+from fdm.llm import LLMError, extract_json
 from fdm.personas.loader import filter_segment, load_personas, persona_source_counts, sample_cohort
 from fdm.products.schema import load_all_products, load_product
 from fdm.rag.retriever import get_retriever
@@ -106,6 +106,14 @@ def test_extract_json_variants(raw):
     assert obj is not None and "적합성" in obj
 
 
+def test_extract_json_repairs_missing_key_quote():
+    raw = '{"적합성: "fail", "가입의향점수": 45, "근거": ["줄바꿈\n포함"]}'
+    obj = extract_json(raw)
+    assert obj is not None
+    assert obj["적합성"] == "fail"
+    assert obj["가입의향점수"] == 45
+
+
 def test_verdict_normalization():
     v = Verdict.from_json({"적합성": "부적합", "가입의향점수": "12.6", "위반원칙": ["설명의무", "존재하지않는원칙"]})
     assert v.suitability == "fail"
@@ -137,6 +145,18 @@ def test_single_shot_norag_has_no_docs(personas):
     res = single_shot(product, personas[0], with_rag=False)
     assert res.mode == "single"
     assert res.grounding_doc_ids == []
+
+
+def test_run_case_marks_llm_failure_for_review(monkeypatch, personas):
+    def boom(*args, **kwargs):
+        raise LLMError("JSON 파싱 실패")
+
+    monkeypatch.setattr("fdm.eval.simulate.single_shot", boom)
+    product = load_product("01_youth_step_saving")
+    cr = run_case(product, personas[0], segment="테스트", n_seeds=1, mode="single")
+    assert cr.needs_review
+    assert cr.confidence_level == "low"
+    assert cr.label_counts == {"error": 1}
 
 
 # -------------------------------------------------------------------- 신뢰도

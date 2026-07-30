@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from ..agents.debate import DebateConfig, run_debate, single_shot
 from ..agents.schema import DebateResult
 from ..config import DATA_DIR, OUTPUT_DIR
-from ..llm import LLMClient
+from ..llm import LLMClient, LLMError
 from ..personas.loader import (
     PersonaSource,
     is_nemotron_persona,
@@ -109,21 +109,60 @@ def run_case(
     runner = run_debate if mode == "debate" else single_shot
 
     runs: list[DebateResult] = []
+    failures: list[str] = []
     for seed, temp in seed_plan(n_seeds, base_temp=cfg.temperature_debater):
         c = DebateConfig(**{**cfg.__dict__, "temperature_debater": temp})
-        runs.append(
-            runner(
-                product,
-                persona,
-                segment=segment,
-                seed=seed,
-                config=c,
-                client=client,
-                retriever=retriever,
-                exclude_doc_ids=exclude_doc_ids,
+        try:
+            runs.append(
+                runner(
+                    product,
+                    persona,
+                    segment=segment,
+                    seed=seed,
+                    config=c,
+                    client=client,
+                    retriever=retriever,
+                    exclude_doc_ids=exclude_doc_ids,
+                )
             )
+        except LLMError as e:
+            failures.append(f"seed={seed}: {str(e)[:240]}")
+    if not runs:
+        return ConsensusResult(
+            product_id=product.product_id,
+            product_name=product.name,
+            persona_id=persona.persona_id,
+            segment=segment,
+            n_runs=0,
+            mode=mode,
+            modal_suitability="warn",
+            label_counts={"error": len(failures)},
+            label_agreement=0.0,
+            intent_mean=50.0,
+            intent_std=0.0,
+            intent_min=50,
+            intent_max=50,
+            judge_self_confidence=0.0,
+            ungrounded_turns=0,
+            confidence=0.0,
+            confidence_level="low",
+            needs_review=True,
+            risks=["LLM JSON 파싱/호출 실패로 판정 불가"] + failures[:2],
+            recommendations=["해당 상품-페르소나 케이스를 낮은 workers 또는 작은 seeds로 재실행"],
         )
-    return aggregate(runs)
+    cr = aggregate(runs)
+    if failures:
+        cr = cr.model_copy(
+            update={
+                "confidence": min(cr.confidence, 0.54),
+                "confidence_level": "low",
+                "needs_review": True,
+                "risks": cr.risks + ["일부 시드에서 LLM JSON 파싱/호출 실패"] + failures[:2],
+                "recommendations": cr.recommendations
+                + ["실패한 시드는 추가 재실행 후 결과 안정성 확인"],
+            }
+        )
+    return cr
 
 
 # ------------------------------------------------------------------- 상품 시뮬레이션
