@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..agents.debate import DebateConfig, run_debate, single_shot
 from ..agents.schema import Suitability
@@ -93,6 +93,8 @@ class ArmScore(BaseModel):
 
 
 class AblationReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     generated_at: str
     backend: str = ""
     model_small: str = ""
@@ -309,6 +311,8 @@ class ProductBenchmarkRow(BaseModel):
 
 
 class ProductBenchmarkReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     generated_at: str
     backend: str = ""
     model_small: str = ""

@@ -1,8 +1,10 @@
 """OpenAI 호환 chat completion 클라이언트.
 
-백엔드 3종:
+백엔드:
   - ollama : 로컬 개발 (qwen3:8b 등)
-  - vllm   : Colab 데모 (EXAONE 4.0 32B 등)
+  - vllm   : Colab/GPU 서버 데모 (EXAONE 4.0 32B 등)
+  - openai : OpenAI 또는 OpenAI-compatible 외부 API
+  - gemini : Gemini API의 OpenAI-compatible endpoint
   - mock   : LLM 없이 파이프라인 배관만 확인하는 결정론적 스텁
 """
 
@@ -33,6 +35,11 @@ class LLMError(RuntimeError):
 class LLMClient:
     def __init__(self, settings: Settings | None = None):
         self.s = settings or SETTINGS
+
+    def _headers(self) -> dict[str, str]:
+        if self.s.llm_api_key:
+            return {"Authorization": f"Bearer {self.s.llm_api_key}"}
+        return {}
 
     # ------------------------------------------------------------------ public
     def model_for(self, role: str) -> str:
@@ -76,32 +83,40 @@ class LLMClient:
             "max_tokens": max_tokens or self.s.max_tokens,
             "stream": False,
         }
-        if seed is not None:
+        if seed is not None and self.s.backend != "gemini":
             payload["seed"] = seed
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        if not self.s.think:
+        if self.s.backend == "gemini" and self.s.gemini_reasoning_effort:
+            payload["reasoning_effort"] = self.s.gemini_reasoning_effort
+        if self.s.backend == "vllm" and not self.s.think:
             # vLLM: Qwen3·EXAONE 등 하이브리드 추론 모델의 사고 모드를 끈다.
             # 서버가 이 키를 모르면 무시하거나 400을 내므로 아래에서 한 번 재시도한다.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
 
         url = f"{self.s.base_url.rstrip('/')}/chat/completions"
         try:
-            r = httpx.post(url, json=payload, timeout=self.s.timeout)
+            r = httpx.post(url, json=payload, headers=self._headers(), timeout=self.s.timeout)
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            # 일부 서버는 response_format / chat_template_kwargs를 거부한다 → 한 번만 재시도
-            if json_mode or "chat_template_kwargs" in payload:
+            # 일부 OpenAI-compatible 서버는 선택 파라미터를 거부한다 → 빼고 한 번만 재시도
+            optional_keys = ("response_format", "chat_template_kwargs", "reasoning_effort")
+            if any(k in payload for k in optional_keys):
                 payload.pop("response_format", None)
                 payload.pop("chat_template_kwargs", None)
-                r = httpx.post(url, json=payload, timeout=self.s.timeout)
-                r.raise_for_status()
+                payload.pop("reasoning_effort", None)
+                try:
+                    r = httpx.post(url, json=payload, headers=self._headers(), timeout=self.s.timeout)
+                    r.raise_for_status()
+                except httpx.HTTPError:
+                    raise LLMError(f"{url} 호출 실패: {e} / {e.response.text[:300]}") from e
             else:
                 raise LLMError(f"{url} 호출 실패: {e} / {e.response.text[:300]}") from e
         except httpx.HTTPError as e:
             raise LLMError(
-                f"{url} 연결 실패: {e}. 백엔드가 떠 있는지 확인하세요 "
-                f"(ollama serve / vllm serve). 또는 FDM_BACKEND=mock 사용."
+                f"{url} 연결 실패: {e}. 배포 환경에서는 외부 OpenAI-compatible LLM 서버 URL과 "
+                f"API 키(FDM_LLM_BASE_URL/FDM_LLM_API_KEY, FDM_OPENAI_* 또는 FDM_GEMINI_*)를 확인하세요. "
+                f"로컬에서는 ollama serve / vllm serve 또는 FDM_BACKEND=mock 사용."
             ) from e
 
         data = r.json()

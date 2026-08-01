@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..agents.debate import DebateConfig, run_debate, single_shot
 from ..agents.schema import DebateResult
@@ -65,6 +65,8 @@ class SegmentResult(BaseModel):
 
 
 class SimulationReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     product_id: str
     product_name: str
     mode: Mode
@@ -170,6 +172,7 @@ def simulate_product(
     product: Product,
     *,
     segment_names: list[str] | None = None,
+    segments: list[Segment] | None = None,
     k_personas: int = 4,
     n_seeds: int = 3,
     mode: Mode = "debate",
@@ -197,10 +200,11 @@ def simulate_product(
     source_counts = persona_source_counts(pool)
     nemotron_count = sum(1 for p in pool if is_nemotron_persona(p))
     synthetic_count = len(pool) - nemotron_count
-    names = segment_names or product.target_segments or None
-    segments = load_segments(names)
-    if not segments:
-        segments = load_segments()
+    if segments is None:
+        names = segment_names or product.target_segments or None
+        segments = load_segments(names)
+        if not segments:
+            segments = load_segments()
 
     jobs: list[tuple[Segment, Persona]] = []
     for seg in segments:
@@ -332,6 +336,7 @@ def sensitivity_analysis(
     specs: list[VariantSpec],
     *,
     segment_names: list[str] | None = None,
+    segments: list[Segment] | None = None,
     k_personas: int = 3,
     n_seeds: int = 2,
     mode: Mode = "debate",
@@ -357,6 +362,7 @@ def sensitivity_analysis(
         rep = simulate_product(
             variant,
             segment_names=segment_names or product.target_segments or None,
+            segments=segments,
             k_personas=k_personas,
             n_seeds=n_seeds,
             mode=mode,

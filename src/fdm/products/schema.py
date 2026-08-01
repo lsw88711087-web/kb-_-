@@ -90,13 +90,25 @@ class Product(BaseModel):
         if self.save_trm_months:
             lines.append(f"- 기간: {self.save_trm_months}개월")
         if self.min_monthly_manwon or self.max_monthly_manwon:
+            amount_label = {
+                "saving": "월 납입",
+                "deposit": "가입/예치 금액",
+                "pension": "월 납입",
+                "fund": "투자 금액",
+            }.get(self.category, "납입/이용 금액")
             lines.append(
-                f"- 월 납입: {self.min_monthly_manwon or 0}~{self.max_monthly_manwon or 0}만원"
+                f"- {amount_label}: {self.min_monthly_manwon or 0}~{self.max_monthly_manwon or 0}만원"
             )
         if self.limit_manwon:
             lines.append(f"- 한도: {self.limit_manwon:,}만원")
         if self.preferentials:
-            lines.append("- 우대조건:")
+            pref_label = {
+                "loan": "금리감면/우대조건",
+                "card": "혜택/실적조건",
+                "pension": "세제/납입 우대조건",
+                "fund": "수수료/운용 우대조건",
+            }.get(self.category, "우대조건")
+            lines.append(f"- {pref_label}:")
             lines += [
                 f"  · {p.name} (+{p.rate_bonus_pct}%p): {p.requirement}" for p in self.preferentials
             ]

@@ -6,15 +6,16 @@ import pytest
 
 from fdm.agents.debate import run_debate, single_shot
 from fdm.agents.schema import Verdict, count_citations, is_grounded, normalize_suitability
-from fdm.config import SETTINGS
+from fdm.config import SETTINGS, Settings
 from fdm.eval.benchmark import load_cases, run_ablation, run_product_benchmark
 from fdm.eval.confidence import aggregate
 from fdm.eval.simulate import VariantSpec, apply_variant, load_segments, run_case, simulate_product
-from fdm.llm import LLMError, extract_json
+from fdm.llm import LLMClient, LLMError, extract_json
 from fdm.personas.loader import filter_segment, load_personas, persona_source_counts, sample_cohort
-from fdm.products.schema import load_all_products, load_product
+from fdm.products.schema import Preferential, Product, load_all_products, load_product
 from fdm.rag.retriever import get_retriever
 from fdm.report import build_report
+from fdm.services.workbench import WorkbenchDB, estimate_run_cost, segment_profile, validate_product_for_workbench
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +80,31 @@ def test_products_load_and_render():
     assert "우대조건" in block
 
 
+def test_product_prompt_uses_category_specific_amount_labels():
+    deposit = Product(
+        product_id="DEP-TEST",
+        name="테스트 예금",
+        category="deposit",
+        intr_rate=3.0,
+        intr_rate2=3.5,
+        save_trm_months=12,
+        min_monthly_manwon=100,
+        max_monthly_manwon=1000,
+    )
+    card = Product(
+        product_id="CARD-TEST",
+        name="테스트 카드",
+        category="card",
+        limit_manwon=500,
+        preferentials=[
+            Preferential(name="생활 캐시백", rate_bonus_pct=1.0, requirement="전월 실적 30만원 이상")
+        ],
+    )
+    assert "가입/예치 금액" in deposit.prompt_block()
+    assert "월 납입" not in deposit.prompt_block()
+    assert "혜택/실적조건" in card.prompt_block()
+
+
 # ----------------------------------------------------------------------- RAG
 def test_retrieval_finds_relevant_law():
     hits = get_retriever().retrieve("최고금리만 강조한 광고 오인 우대금리", k=3)
@@ -112,6 +138,72 @@ def test_extract_json_repairs_missing_key_quote():
     assert obj is not None
     assert obj["적합성"] == "fail"
     assert obj["가입의향점수"] == 45
+
+
+def test_external_llm_settings_and_auth_header():
+    settings = Settings()
+    settings.backend = "openai"
+    settings.openai_base_url = "https://llm.example.com/v1"
+    settings.llm_api_key = "secret-token"
+    client = LLMClient(settings)
+    assert settings.base_url == "https://llm.example.com/v1"
+    assert client._headers() == {"Authorization": "Bearer secret-token"}
+
+
+def test_gemini_settings_use_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setenv("FDM_BACKEND", "gemini")
+    monkeypatch.setenv("FDM_OPENAI_API_KEY", "openai-token")
+    monkeypatch.setenv("FDM_GEMINI_API_KEY", "gemini-token")
+    monkeypatch.delenv("FDM_MODEL_SMALL", raising=False)
+    monkeypatch.delenv("FDM_MODEL_JUDGE", raising=False)
+    settings = Settings()
+    client = LLMClient(settings)
+    assert settings.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert settings.model_small == "gemini-3.6-flash"
+    assert settings.model_judge == "gemini-3.6-flash"
+    assert settings.gemini_reasoning_effort == "low"
+    assert client._headers() == {"Authorization": "Bearer gemini-token"}
+
+
+def test_gemini_chat_payload_is_openai_compatible(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+
+    def fake_post(url, *, json, headers, timeout):
+        calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        return FakeResponse()
+
+    settings = Settings()
+    settings.backend = "gemini"
+    settings.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+    settings.llm_api_key = "gemini-token"
+    settings.model_small = "gemini-3.6-flash"
+    settings.model_judge = "gemini-3.6-flash"
+    settings.gemini_reasoning_effort = "low"
+    monkeypatch.setattr("fdm.llm.httpx.post", fake_post)
+
+    res = LLMClient(settings).chat(
+        role="single",
+        system="JSON only",
+        user="return ok",
+        temperature=0,
+        seed=123,
+        json_mode=True,
+    )
+
+    assert res.text == '{"ok": true}'
+    assert calls[0]["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert calls[0]["headers"] == {"Authorization": "Bearer gemini-token"}
+    assert calls[0]["json"]["model"] == "gemini-3.6-flash"
+    assert "seed" not in calls[0]["json"]
+    assert calls[0]["json"]["response_format"] == {"type": "json_object"}
+    assert calls[0]["json"]["reasoning_effort"] == "low"
 
 
 def test_verdict_normalization():
@@ -205,6 +297,94 @@ def test_apply_variant_changes_rates():
     assert v.intr_rate == round(product.intr_rate - 0.5, 3)
     assert v.product_id.endswith("::금리-0.5")
     assert product.intr_rate == 3.7  # 원본 불변
+
+
+def test_simulate_accepts_custom_segments(personas):
+    product = load_product("01_youth_step_saving")
+    custom = load_segments(["청년_사회초년생"])[0].model_copy(update={"name": "UI_청년_커스텀"})
+    sim = simulate_product(
+        product,
+        segments=[custom],
+        k_personas=1,
+        n_seeds=1,
+        mode="single",
+        workers=1,
+        personas=personas,
+        progress=False,
+    )
+    assert [s.segment for s in sim.segments] == ["UI_청년_커스텀"]
+
+
+def test_workbench_db_roundtrip(tmp_path, personas):
+    store = WorkbenchDB(tmp_path / "workbench.sqlite3")
+    store.initialize()
+    product = load_product("01_youth_step_saving")
+    version = store.save_product_version(product, write_artifact=False, change_note="테스트 저장")
+    assert version.version_number == 1
+    assert store.get_product_version(version.id).product.product_id == product.product_id
+
+    seg = load_segments(["청년_사회초년생"])[0]
+    profile = segment_profile(seg, personas)
+    assert profile["n_personas"] > 0
+    assert profile["avg_income_manwon"] is not None
+
+    issues = validate_product_for_workbench(product)
+    assert not [i for i in issues if i.severity == "error"]
+
+    sim = simulate_product(
+        product,
+        segments=[seg],
+        k_personas=1,
+        n_seeds=1,
+        mode="single",
+        workers=1,
+        personas=personas,
+        progress=False,
+    )
+    run_id = store.start_simulation_run(
+        product_version_id=version.id,
+        preset="빠른 검증",
+        mode="single",
+        n_seeds=1,
+        personas_per_segment=1,
+        workers=1,
+        persona_source="synthetic",
+        settings={"segment_names": [seg.name]},
+    )
+    store.complete_simulation_run(run_id, sim, artifact_path=tmp_path / "sim.json")
+    loaded = store.load_simulation_report(run_id)
+    assert loaded.product_id == product.product_id
+    assert store.get_simulation_run(run_id).status == "완료"
+    assert store.portfolio_rows()[0].project_id == product.product_id
+
+
+def test_workbench_validation_is_category_specific():
+    card = Product(product_id="CARD-WARN", name="카드 검증", category="card", limit_manwon=300)
+    messages = [i.message for i in validate_product_for_workbench(card)]
+    assert not any("최고금리" in m for m in messages)
+    assert any("혜택/실적 조건" in m for m in messages)
+
+
+def test_workbench_estimate_counts_sensitivity():
+    quick = estimate_run_cost(
+        n_segments=2,
+        mode="single",
+        n_seeds=1,
+        personas_per_segment=2,
+        workers=2,
+        include_sensitivity=False,
+    )
+    deep = estimate_run_cost(
+        n_segments=2,
+        mode="debate",
+        n_seeds=3,
+        personas_per_segment=4,
+        workers=2,
+        include_sensitivity=True,
+        n_variants=3,
+    )
+    assert quick["llm_calls"] == 4
+    assert deep["llm_calls"] > quick["llm_calls"]
 
 
 # ------------------------------------------------------------------ 애블레이션

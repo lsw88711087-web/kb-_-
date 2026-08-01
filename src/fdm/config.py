@@ -27,6 +27,43 @@ def _env(key: str, default: str) -> str:
     return v if v not in (None, "") else default
 
 
+def _env_any(keys: tuple[str, ...], default: str) -> str:
+    for key in keys:
+        v = os.environ.get(key)
+        if v not in (None, ""):
+            return v
+    return default
+
+
+def _default_model(role: str) -> str:
+    backend = os.environ.get("FDM_BACKEND", "mock")
+    if backend == "gemini":
+        return "gemini-3.6-flash"
+    if backend == "openai":
+        return "gpt-4.1-mini" if role == "small" else "gpt-4.1"
+    return "qwen3:8b"
+
+
+def _default_api_key() -> str:
+    backend = os.environ.get("FDM_BACKEND", "mock")
+    if backend == "gemini":
+        return _env_any(("FDM_GEMINI_API_KEY", "GEMINI_API_KEY", "FDM_LLM_API_KEY"), "")
+    if backend == "openai":
+        return _env_any(("FDM_OPENAI_API_KEY", "OPENAI_API_KEY", "FDM_LLM_API_KEY"), "")
+    if backend == "vllm":
+        return _env_any(("FDM_VLLM_API_KEY", "FDM_LLM_API_KEY"), "")
+    return _env_any(
+        (
+            "FDM_LLM_API_KEY",
+            "FDM_VLLM_API_KEY",
+            "FDM_OPENAI_API_KEY",
+            "FDM_GEMINI_API_KEY",
+            "GEMINI_API_KEY",
+        ),
+        "",
+    )
+
+
 @dataclass
 class Settings:
     backend: str = field(default_factory=lambda: _env("FDM_BACKEND", "mock"))
@@ -34,12 +71,28 @@ class Settings:
         default_factory=lambda: _env("FDM_OLLAMA_BASE_URL", "http://localhost:11434/v1")
     )
     vllm_base_url: str = field(
-        default_factory=lambda: _env("FDM_VLLM_BASE_URL", "http://localhost:8000/v1")
+        default_factory=lambda: _env(
+            "FDM_VLLM_BASE_URL",
+            _env("FDM_LLM_BASE_URL", "http://localhost:8000/v1"),
+        )
     )
-    model_small: str = field(default_factory=lambda: _env("FDM_MODEL_SMALL", "qwen3:8b"))
-    model_judge: str = field(default_factory=lambda: _env("FDM_MODEL_JUDGE", "qwen3:8b"))
+    openai_base_url: str = field(
+        default_factory=lambda: _env("FDM_OPENAI_BASE_URL", "https://api.openai.com/v1")
+    )
+    gemini_base_url: str = field(
+        default_factory=lambda: _env(
+            "FDM_GEMINI_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+    )
+    llm_api_key: str = field(default_factory=_default_api_key)
+    model_small: str = field(default_factory=lambda: _env("FDM_MODEL_SMALL", _default_model("small")))
+    model_judge: str = field(default_factory=lambda: _env("FDM_MODEL_JUDGE", _default_model("judge")))
     timeout: float = field(default_factory=lambda: float(_env("FDM_TIMEOUT", "180")))
     max_tokens: int = field(default_factory=lambda: int(_env("FDM_MAX_TOKENS", "1200")))
+    gemini_reasoning_effort: str = field(
+        default_factory=lambda: _env("FDM_GEMINI_REASONING_EFFORT", "low")
+    )
     # Qwen3·EXAONE 등 하이브리드 추론 모델의 사고 모드. 켜면 2~3배 느리고
     # 토큰 예산을 사고가 다 써서 본문이 잘리는 일이 생긴다. 기본은 끔.
     think: bool = field(default_factory=lambda: _env("FDM_THINK", "0") not in ("0", "false", "False"))
@@ -47,6 +100,10 @@ class Settings:
 
     @property
     def base_url(self) -> str:
+        if self.backend == "gemini":
+            return self.gemini_base_url
+        if self.backend == "openai":
+            return self.openai_base_url
         return self.vllm_base_url if self.backend == "vllm" else self.ollama_base_url
 
 
