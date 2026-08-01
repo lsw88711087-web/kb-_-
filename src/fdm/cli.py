@@ -49,7 +49,7 @@ for _stream in (sys.stdout, sys.stderr):
 app = typer.Typer(add_completion=False, help="합성 페르소나 기반 금융상품 설계·검증 에이전트")
 console = Console()
 PERSONA_SOURCES = {"auto", "jsonl", "hf", "synthetic"}
-MODES = {"single", "debate"}
+MODES = {"single", "debate", "ensemble"}
 
 
 def _persona_source(value: str) -> PersonaSource:
@@ -200,7 +200,9 @@ def simulate(
     product: str = typer.Argument(...),
     seeds: int = typer.Option(3, help="멀티시드 반복 횟수"),
     personas_per_segment: int = typer.Option(4),
-    mode: str = typer.Option("debate", help="debate | single"),
+    mode: str = typer.Option(
+        "ensemble", help="ensemble | single | debate (교차확인 계층 T1은 ensemble에서만 산출)"
+    ),
     workers: int = typer.Option(4),
     segments: Optional[str] = typer.Option(None, help="쉼표구분 세그먼트명"),
     with_ablation: bool = typer.Option(False, help="애블레이션도 함께 실행"),
@@ -260,7 +262,7 @@ def benchmark_products_cmd(
     personas_per_segment: int = typer.Option(3),
     persona_limit: int = typer.Option(2000, help="로드할 페르소나 풀 크기"),
     workers: int = typer.Option(4),
-    modes: str = typer.Option("single,debate", help="single,debate 중 쉼표구분"),
+    modes: str = typer.Option("single,debate", help="single,debate,ensemble 중 쉼표구분"),
     segments: Optional[str] = typer.Option(None, help="쉼표구분 세그먼트명"),
     persona_source: str = typer.Option("auto", help="auto | jsonl | hf | synthetic"),
     require_real_personas: bool = typer.Option(False, help="합성 폴백이 섞이면 실패"),
@@ -315,10 +317,12 @@ def benchmark_products_cmd(
 
 @app.command()
 def ablation(
-    seeds: int = typer.Option(2), limit: Optional[int] = typer.Option(None, help="사례 수 제한")
+    seeds: int = typer.Option(2),
+    limit: Optional[int] = typer.Option(None, help="사례 수 제한"),
+    seed_base: int = typer.Option(7000, help="시드 시작값. 바꿔서 재실행하면 표집 노이즈를 측정"),
 ) -> None:
     """분쟁조정 정답셋으로 단발 vs 디베이트 적중률을 비교한다."""
-    rep = run_ablation(n_seeds=seeds, limit=limit)
+    rep = run_ablation(n_seeds=seeds, limit=limit, seed_base=seed_base)
     t = Table("조건", "적중률", "위험탐지", "macroF1", "위반원칙재현율", "LLM호출")
     for a in rep.arms:
         t.add_row(a.arm, f"{a.accuracy:.1%}", f"{a.risk_accuracy:.1%}", f"{a.macro_f1:.3f}",

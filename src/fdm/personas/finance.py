@@ -104,6 +104,14 @@ def attach_finance(p: Persona, *, overwrite: bool = False) -> Persona:
         if has_debt
         else 0
     )
+    if debt > 0:
+        multiple = params["debt_cap_income_multiple_default"]
+        for kw, m in params["debt_cap_income_multiple_by_occupation"].items():
+            if kw in p.occupation:
+                multiple = m
+                break
+        cap = max(params["debt_cap_floor_manwon"], int(income * multiple))
+        debt = min(debt, cap)
 
     monthly_income = max(1, int(round(income / 12)))
     # 월 원리금상환액 ≈ 부채 × 연이자+원금상환율 / 12

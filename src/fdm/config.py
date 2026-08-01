@@ -97,6 +97,12 @@ class Settings:
     # 토큰 예산을 사고가 다 써서 본문이 잘리는 일이 생긴다. 기본은 끔.
     think: bool = field(default_factory=lambda: _env("FDM_THINK", "0") not in ("0", "false", "False"))
     keep_alive: str = field(default_factory=lambda: _env("FDM_KEEP_ALIVE", "30m"))
+    # Ollama 기본 컨텍스트(4096)는 사실팩+근거+디베이트 전문을 담기에 부족할 수 있다.
+    # 6144는 8GB VRAM에서도 부담을 크게 늘리지 않으면서 잘림을 줄이는 보수적인 기본값이다.
+    num_ctx: int = field(default_factory=lambda: int(_env("FDM_NUM_CTX", "6144")))
+    # 토론 온도는 성능 측정 중 과잉 변동이 관측되어 기본값을 낮췄다.
+    temp_debater: float = field(default_factory=lambda: float(_env("FDM_TEMP_DEBATER", "0.5")))
+    temp_judge: float = field(default_factory=lambda: float(_env("FDM_TEMP_JUDGE", "0.2")))
 
     @property
     def base_url(self) -> str:

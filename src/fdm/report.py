@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .concerns import TIER_BASIS, TIER_CAVEAT, TIER_LABEL, TIER_MARK, TIER_ORDER, type_label
 from .config import OUTPUT_DIR
 from .eval.benchmark import AblationReport, HoldingReport
 from .eval.simulate import SensitivityRow, SimulationReport
@@ -28,16 +29,6 @@ def build_report(
         f"\n- 실행환경: backend=`{sim.backend}`, 토론모델=`{sim.model_small}`, 심판모델=`{sim.model_judge}`"
         f"\n- 모드: {sim.mode} / 멀티시드: {sim.n_seeds}회"
     )
-    if sim.persona_pool_size:
-        L.append(
-            f"\n- 페르소나 풀: 총 {sim.persona_pool_size}명 / "
-            f"Nemotron {sim.persona_nemotron_count}명 / 합성 폴백 {sim.persona_synthetic_count}명"
-        )
-    if sim.persona_source_counts:
-        L.append(
-            "\n- 페르소나 출처 상세: "
-            + ", ".join(f"`{src}` {n}명" for src, n in sim.persona_source_counts.items())
-        )
 
     L.append("\n## 1. 요약 판정")
     risky = [s for s in sim.segments if s.verdict_mix.get("fail", 0) >= 0.3]
@@ -56,6 +47,12 @@ def build_report(
     best = max(sim.segments, key=lambda s: s.mean_intent, default=None)
     if best:
         L.append(f"- 가입의향 최고 세그먼트: {best.segment} (평균 {best.mean_intent}점)")
+    act = [(s.segment, len(s.tiers["T1"])) for s in sim.segments if s.tiers["T1"]]
+    if act:
+        L.append(
+            f"- **{TIER_MARK['T1']} 즉시 조치 우려**: "
+            + ", ".join(f"{name}({n}건)" for name, n in act)
+        )
 
     L.append("\n## 2. 세그먼트별 결과")
     L.append("\n| 세그먼트 | n | 가입의향(평균) | 가입률 | pass/warn/fail | 신뢰도 | 상태 |")
@@ -67,7 +64,43 @@ def build_report(
             f"{mix} | {s.mean_confidence:.2f} | {s.flag} |"
         )
 
-    L.append("\n## 3. 주요 위험요인 및 개선권고 (디베이트 근거 기반)")
+    L.append("\n## 3. 우려 계층 (교차확인 × 심각도)")
+    L.append(
+        "\n두 신호를 곱해 읽을 순서를 만든다. **지우지 않고 정렬한다** — "
+        "놓치면 책임이고, 많으면 무시되기 때문이다."
+    )
+    L.append("\n| 계층 | 판단 근거 (실측) |")
+    L.append("|---|---|")
+    for t in TIER_ORDER:
+        L.append(f"| {TIER_MARK[t]} **{TIER_LABEL[t]}** | {TIER_BASIS[t]} |")
+    L.append(f"\n> {TIER_CAVEAT}")
+    if sim.mode != "ensemble":
+        L.append(
+            f"\n> 이번 실행은 `{sim.mode}` 단독이라 **교차확인이 성립하지 않는다**. "
+            "모든 우려가 '단독'으로 계층화되어 실제보다 낮게 표시되며, "
+            "**즉시 조치(T1)는 구조적으로 나올 수 없다**. "
+            "교차확인 신호를 쓰려면 `--mode ensemble`로 실행해야 한다."
+        )
+
+    for s in sim.segments:
+        L.append(f"\n### {s.segment}")
+        tiers = s.tiers
+        if not any(tiers.values()):
+            L.append("(구조화된 우려 없음)")
+        for t in TIER_ORDER:
+            items = tiers[t]
+            if not items:
+                continue
+            L.append(f"\n**{TIER_MARK[t]} {TIER_LABEL[t]}** ({len(items)}건)")
+            for c in items:
+                cross = "교차확인" if c.cross_checked else "단독"
+                L.append(f"- `{c.severity}·{cross}` **{type_label(c.type)}** — {c.statement}")
+                if c.anchor:
+                    L.append(f"    - 근거: {c.anchor}")
+                if c.verify_with:
+                    L.append(f"    - 확인방법: {c.verify_with}")
+
+    L.append("\n## 3-1. 주요 위험요인 및 개선권고 (디베이트 근거 기반)")
     for s in sim.segments:
         L.append(f"\n### {s.segment}")
         if s.top_risks:
@@ -144,7 +177,7 @@ def build_report(
 
     L.append("\n## 8. 한계 (정직한 고지)")
     L += [
-        "- Nemotron-Personas-Korea는 공개 합성 페르소나 데이터셋이다. 실제 개인 데이터가 아니며, 변수 조합(joint distribution) 정합성은 별도 검증이 필요하다. 본 결과는 **탐색·경보용**이며 확정 근거로 쓸 수 없다.",
+        "- 합성 페르소나(Nemotron-Personas-Korea)는 개별 변수 분포는 실제와 정합하나 변수 조합(joint distribution) 정합성은 검증되지 않았다. 본 결과는 **탐색·경보용**이며 확정 근거로 쓸 수 없다.",
         "- 디베이트는 LLM의 내적 충실성을 높이지만 외적 타당성(실제 시장 일치)을 자동 보장하지 않는다. 반드시 실데이터·조정례와 병용해야 한다.",
         "- 본 도구는 상품기획팀용 세그먼트 설계·검증 도구다. 개별 소비자에 대한 상품 추천·판매권유가 아니다.",
         "- 재무 프로파일 수치는 가계금융복지조사 분포에서 합성한 값으로 실제 개인이 아니다.",
