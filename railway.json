@@ -1,0 +1,10 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "railpack",
+    "buildCommand": "python -m pip install -r requirements.txt"
+  },
+  "deploy": {
+    "startCommand": "python -m streamlit run ui/app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true --browser.gatherUsageStats false"
+  }
+}

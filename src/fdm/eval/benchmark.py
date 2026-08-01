@@ -17,17 +17,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..agents.debate import DebateConfig, run_debate, run_ensemble, single_shot
 from ..agents.schema import Suitability
 from ..config import BENCHMARK_DIR, OUTPUT_DIR
 from ..llm import LLMClient, LLMError
+from ..personas.loader import PersonaSource, load_personas, require_nemotron_personas
 from ..personas.schema import Persona
 from ..products.schema import Product
 from ..rag.retriever import get_retriever
 from .confidence import aggregate
-from .simulate import SimulationReport
+from .simulate import Mode, SimulationReport, simulate_product
 
 CASES_PATH = BENCHMARK_DIR / "dispute_cases.json"
 HOLDING_PATH = BENCHMARK_DIR / "segment_holding_rates.json"
@@ -163,6 +164,8 @@ class ArmScore(BaseModel):
 
 
 class AblationReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     generated_at: str
     backend: str = ""
     model_small: str = ""
@@ -529,3 +532,251 @@ def compare_holding_rates(report: SimulationReport, category: str) -> HoldingRep
         spearman=rho,
         rows=rows,
     )
+
+
+class ProductBenchmarkRow(BaseModel):
+    product_id: str
+    product_name: str
+    category: str
+    n_segments: int
+    persona_pool_size: int
+    persona_nemotron_count: int
+    persona_synthetic_count: int
+    single_adoption_rate: float | None = None
+    debate_adoption_rate: float | None = None
+    delta_adoption_rate_vs_single: float | None = None
+    single_mean_intent: float | None = None
+    debate_mean_intent: float | None = None
+    delta_intent_vs_single: float | None = None
+    single_fail_ratio: float | None = None
+    debate_fail_ratio: float | None = None
+    single_low_confidence_ratio: float | None = None
+    debate_low_confidence_ratio: float | None = None
+    single_holding_mae: float | None = None
+    debate_holding_mae: float | None = None
+    delta_mae_vs_single: float | None = None
+    single_holding_spearman: float | None = None
+    debate_holding_spearman: float | None = None
+    delta_spearman_vs_single: float | None = None
+    sim_paths: dict[str, str] = Field(default_factory=dict)
+
+
+class ProductBenchmarkReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    generated_at: str
+    backend: str = ""
+    model_small: str = ""
+    model_judge: str = ""
+    n_products: int
+    n_seeds: int
+    personas_per_segment: int
+    modes: list[Mode]
+    rows: list[ProductBenchmarkRow] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    def save(self, path: str | Path | None = None) -> Path:
+        p = Path(path) if path else OUTPUT_DIR / "product_benchmark.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        return p
+
+    @staticmethod
+    def load(path: str | Path) -> "ProductBenchmarkReport":
+        return ProductBenchmarkReport(**json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def _weighted_segment_mean(report: SimulationReport | None, attr: str) -> float | None:
+    if report is None:
+        return None
+    total = sum(s.n_personas for s in report.segments)
+    if total == 0:
+        return None
+    return round(sum(getattr(s, attr) * s.n_personas for s in report.segments) / total, 3)
+
+
+def _weighted_fail_ratio(report: SimulationReport | None) -> float | None:
+    if report is None:
+        return None
+    total = sum(s.n_personas for s in report.segments)
+    if total == 0:
+        return None
+    fail = sum(s.verdict_mix.get("fail", 0.0) * s.n_personas for s in report.segments)
+    return round(fail / total, 3)
+
+
+def _delta(a: float | None, b: float | None) -> float | None:
+    return round(a - b, 3) if a is not None and b is not None else None
+
+
+def run_product_benchmark(
+    products: list[Product],
+    *,
+    modes: tuple[Mode, ...] = ("single", "debate"),
+    n_seeds: int = 2,
+    k_personas: int = 3,
+    persona_limit: int = 2000,
+    workers: int = 4,
+    segment_names: list[str] | None = None,
+    persona_source: PersonaSource = "auto",
+    require_real_personas: bool = False,
+    config: DebateConfig | None = None,
+    progress: bool = True,
+    save_simulations: bool = True,
+) -> ProductBenchmarkReport:
+    from ..config import SETTINGS
+
+    personas = load_personas(
+        source=persona_source,
+        limit=persona_limit,
+        allow_synthetic_fallback=not require_real_personas,
+    )
+    if require_real_personas:
+        require_nemotron_personas(personas)
+
+    rows: list[ProductBenchmarkRow] = []
+    for product in products:
+        if progress:
+            print(f"\n[상품 벤치마크] {product.name} ({product.product_id})", flush=True)
+        sims: dict[str, SimulationReport] = {}
+        holds: dict[str, HoldingReport] = {}
+        sim_paths: dict[str, str] = {}
+
+        for mode in modes:
+            if progress:
+                print(f"  - mode={mode}", flush=True)
+            sim = simulate_product(
+                product,
+                segment_names=segment_names or product.target_segments or None,
+                k_personas=k_personas,
+                n_seeds=n_seeds,
+                mode=mode,
+                workers=workers,
+                config=config,
+                personas=personas,
+                require_real_personas=require_real_personas,
+                progress=progress,
+            )
+            sims[mode] = sim
+            holds[mode] = compare_holding_rates(sim, product.category)
+            if save_simulations:
+                sim_paths[mode] = str(sim.save())
+
+        single = sims.get("single")
+        debate = sims.get("debate")
+        single_hold = holds.get("single")
+        debate_hold = holds.get("debate")
+        template = debate or single or next(iter(sims.values()), None)
+        rows.append(
+            ProductBenchmarkRow(
+                product_id=product.product_id,
+                product_name=product.name,
+                category=product.category,
+                n_segments=max((len(s.segments) for s in sims.values()), default=0),
+                persona_pool_size=template.persona_pool_size if template else len(personas),
+                persona_nemotron_count=template.persona_nemotron_count if template else 0,
+                persona_synthetic_count=template.persona_synthetic_count if template else 0,
+                single_adoption_rate=_weighted_segment_mean(single, "adoption_rate"),
+                debate_adoption_rate=_weighted_segment_mean(debate, "adoption_rate"),
+                single_mean_intent=_weighted_segment_mean(single, "mean_intent"),
+                debate_mean_intent=_weighted_segment_mean(debate, "mean_intent"),
+                single_fail_ratio=_weighted_fail_ratio(single),
+                debate_fail_ratio=_weighted_fail_ratio(debate),
+                single_low_confidence_ratio=_weighted_segment_mean(single, "low_confidence_ratio"),
+                debate_low_confidence_ratio=_weighted_segment_mean(debate, "low_confidence_ratio"),
+                single_holding_mae=single_hold.mae if single_hold else None,
+                debate_holding_mae=debate_hold.mae if debate_hold else None,
+                single_holding_spearman=single_hold.spearman if single_hold else None,
+                debate_holding_spearman=debate_hold.spearman if debate_hold else None,
+                sim_paths=sim_paths,
+            )
+        )
+
+    for row in rows:
+        row.delta_adoption_rate_vs_single = _delta(row.debate_adoption_rate, row.single_adoption_rate)
+        row.delta_intent_vs_single = _delta(row.debate_mean_intent, row.single_mean_intent)
+        row.delta_mae_vs_single = _delta(row.debate_holding_mae, row.single_holding_mae)
+        row.delta_spearman_vs_single = _delta(
+            row.debate_holding_spearman, row.single_holding_spearman
+        )
+
+    return ProductBenchmarkReport(
+        generated_at=datetime.now().isoformat(timespec="seconds"),
+        backend=SETTINGS.backend,
+        model_small=SETTINGS.model_small,
+        model_judge=SETTINGS.model_judge,
+        n_products=len(products),
+        n_seeds=n_seeds,
+        personas_per_segment=k_personas,
+        modes=list(modes),
+        rows=rows,
+        notes=[
+            "single은 디베이트 없는 단발 RAG 판정 대조군, debate는 3진영 디베이트+RAG 실험군이다.",
+            "KOSIS 보유율은 가입의향과 정의가 다르므로 절대값보다 Spearman 순위상관을 우선 확인한다.",
+            "벤치마크 데이터는 PoC용 근사/가공 데이터이므로 발표 전 원문·최신 통계로 교체해야 한다.",
+        ],
+    )
+
+
+def build_product_benchmark_markdown(report: ProductBenchmarkReport) -> str:
+    lines = ["# 여러 상품 벤치마크 리포트"]
+    lines.append(
+        f"\n- 생성시각: {report.generated_at}"
+        f"\n- 실행환경: backend=`{report.backend}`, 토론모델=`{report.model_small}`, 심판모델=`{report.model_judge}`"
+        f"\n- 상품 수: {report.n_products} / 모드: {', '.join(report.modes)}"
+        f"\n- 세그먼트별 페르소나: {report.personas_per_segment}명 / 멀티시드: {report.n_seeds}회"
+    )
+    lines.append("\n## 1. 상품별 대조군 비교")
+    lines.append(
+        "\n| 상품 | 상품군 | 세그먼트 | single 가입률 | debate 가입률 | Δ가입률 | "
+        "single 의향 | debate 의향 | Δ의향 | debate fail | debate 저신뢰 |"
+    )
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for row in report.rows:
+        lines.append(
+            f"| {row.product_name} | {row.category} | {row.n_segments} | "
+            f"{_pct(row.single_adoption_rate)} | {_pct(row.debate_adoption_rate)} | "
+            f"{_signed_pct(row.delta_adoption_rate_vs_single)} | "
+            f"{_num(row.single_mean_intent)} | {_num(row.debate_mean_intent)} | "
+            f"{_signed_num(row.delta_intent_vs_single)} | "
+            f"{_pct(row.debate_fail_ratio)} | {_pct(row.debate_low_confidence_ratio)} |"
+        )
+
+    lines.append("\n## 2. KOSIS 보유율 대조")
+    lines.append("\n| 상품 | single MAE | debate MAE | ΔMAE | single rho | debate rho | Δrho |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for row in report.rows:
+        lines.append(
+            f"| {row.product_name} | {_num(row.single_holding_mae)} | {_num(row.debate_holding_mae)} | "
+            f"{_signed_num(row.delta_mae_vs_single)} | {_num(row.single_holding_spearman)} | "
+            f"{_num(row.debate_holding_spearman)} | {_signed_num(row.delta_spearman_vs_single)} |"
+        )
+
+    lines.append("\n## 3. 데이터 출처 확인")
+    lines.append("\n| 상품 | 페르소나 풀 | Nemotron | 합성 폴백 |")
+    lines.append("|---|---:|---:|---:|")
+    for row in report.rows:
+        lines.append(
+            f"| {row.product_name} | {row.persona_pool_size} | {row.persona_nemotron_count} | "
+            f"{row.persona_synthetic_count} |"
+        )
+
+    lines.append("\n## 4. 해석상 주의")
+    lines += [f"- {note}" for note in report.notes]
+    return "\n".join(lines) + "\n"
+
+
+def _pct(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:.1%}"
+
+
+def _signed_pct(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:+.1%}"
+
+
+def _num(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:.3f}"
+
+
+def _signed_num(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:+.3f}"

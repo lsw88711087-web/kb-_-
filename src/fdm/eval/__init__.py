@@ -1,4 +1,14 @@
-from .benchmark import AblationReport, ArmScore, compare_holding_rates, load_cases, run_ablation
+from .benchmark import (
+    AblationReport,
+    ArmScore,
+    ProductBenchmarkReport,
+    ProductBenchmarkRow,
+    build_product_benchmark_markdown,
+    compare_holding_rates,
+    load_cases,
+    run_ablation,
+    run_product_benchmark,
+)
 from .confidence import ConsensusResult, aggregate, seed_plan
 from .simulate import (
     SegmentResult,
@@ -16,17 +26,21 @@ __all__ = [
     "AblationReport",
     "ArmScore",
     "ConsensusResult",
+    "ProductBenchmarkReport",
+    "ProductBenchmarkRow",
     "SegmentResult",
     "SimulationReport",
     "VariantSpec",
     "aggregate",
     "apply_variant",
+    "build_product_benchmark_markdown",
     "compare_holding_rates",
     "default_variants",
     "load_cases",
     "load_segments",
     "run_ablation",
     "run_case",
+    "run_product_benchmark",
     "seed_plan",
     "sensitivity_analysis",
     "simulate_product",
