@@ -66,7 +66,11 @@ with st.sidebar:
     sel_file = st.selectbox("상품", list(pf.keys()))
     n_seeds = st.slider("멀티시드 반복", 1, 7, 3)
     k_personas = st.slider("세그먼트별 페르소나 수", 1, 10, 3)
-    mode = st.radio("모드", ["debate", "single"], horizontal=True)
+    mode = st.radio("모드", ["ensemble", "single", "debate"], horizontal=True)
+    st.caption(
+        "ensemble = 단발+디베이트 병행. 우려 recall이 80%→97%로 오르고 "
+        "**교차확인 계층(T1)은 이 모드에서만** 나옵니다. 대신 호출이 6배입니다."
+    )
     run_sens = st.checkbox("민감도 분석 포함", value=False)
     if st.button("실행", type="primary"):
         prod = load_product(pf[sel_file])
@@ -180,8 +184,8 @@ with tab_tier:
     if sim.mode != "ensemble":
         st.info(
             f"이번 실행은 `{sim.mode}` 단독이라 **교차확인이 성립하지 않습니다**. "
-            "모든 우려가 '단독'으로 계층화되어 실제보다 낮게 표시됩니다. "
-            "교차확인 신호를 쓰려면 단발·디베이트를 병행해야 합니다."
+            "모든 우려가 '단독'으로 계층화되고 **즉시 조치(T1)는 나올 수 없습니다**. "
+            "사이드바에서 모드를 `ensemble`로 두고 다시 실행하세요."
         )
 
     for s in sim.segments:

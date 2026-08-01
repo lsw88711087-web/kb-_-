@@ -81,6 +81,14 @@ class FactPack(BaseModel):
     principal_guaranteed: bool | None = None
     rate_is_variable: bool | None = None
     has_preferentials: bool | None = None
+    has_rate_spread: bool | None = Field(
+        default=None,
+        description=(
+            "기본금리와 최고금리에 격차가 있는가. 광고 오인은 그 격차를 강조할 때 생기므로, "
+            "격차가 없으면 '최고금리 위주 표시' 우려가 성립하지 않는다. "
+            "금리 미기재면 None(모름)이며 판정하지 않는다"
+        ),
+    )
     joint_attainment: float | None = Field(
         default=None, description="우대조건 전부 동시 충족 추정 확률 (est_attainment_rate의 곱)"
     )
@@ -183,6 +191,13 @@ def build_fact_pack(product: Product, persona: Persona) -> FactPack:
         # 미기재(None)는 None으로 전파한다. bool()로 변환하면 '모름'이 '아니오'가 된다.
         rate_is_variable=None if product.rate_basis is None else product.rate_basis == "변동",
         has_preferentials=None if product.preferentials is None else bool(product.preferentials),
+        # 금리 둘 중 하나라도 미기재면 판정하지 않는다 (모름을 '격차 없음'으로 읽으면
+        # 정당한 광고 오인 우려를 지운다)
+        has_rate_spread=(
+            None
+            if product.intr_rate is None or product.intr_rate2 is None
+            else product.intr_rate2 > product.intr_rate
+        ),
         has_fees=None if product.fees is None else bool(product.fees),
         is_lump_sum_repayment=(
             any("일시상환" in n for n in product.risk_notes) if product.risk_notes else None
@@ -302,6 +317,16 @@ CONTRADICTION_RULES: dict[str, Callable[[FactPack], bool]] = {
     ),
     # 고정금리 상품에 금리상승 우려 (금리유형 미기재면 판정하지 않는다)
     "rate_variability": lambda f: f.rate_is_variable is False,
+    # 강조할 최고금리가 없는 상품에 '최고금리 위주 표시' 우려.
+    #
+    # 이 유형은 오탐이 가장 심했다 — 17번 제기해 1번 맞았고(정밀도 6%),
+    # 깨끗한 12건 중 10건에서 나왔다. 광고 오인은 기본금리와 최고금리의 격차를
+    # 강조할 때 생기므로, 우대조건이 없거나 금리 격차가 없으면 성립할 수 없다.
+    # 사전 시뮬레이션(pass12_A): 오탐 7개 제거, **정답 손실 0개**.
+    # 둘 다 None(모름)이면 판정하지 않는다.
+    "rate_display_misleading": lambda f: (
+        f.has_preferentials is False or f.has_rate_spread is False
+    ),
     # 예금자보호 한도 내인데 초과 우려
     "deposit_protection_limit": lambda f: (
         f.deposit_exposure is not None and f.deposit_exposure <= DEPOSIT_PROTECTION_LIMIT_MANWON

@@ -132,7 +132,9 @@ def simulate(
     product: str = typer.Argument(...),
     seeds: int = typer.Option(3, help="멀티시드 반복 횟수"),
     personas_per_segment: int = typer.Option(4),
-    mode: str = typer.Option("debate", help="debate | single"),
+    mode: str = typer.Option(
+        "ensemble", help="ensemble | single | debate (교차확인 계층 T1은 ensemble에서만 나온다)"
+    ),
     workers: int = typer.Option(4),
     segments: Optional[str] = typer.Option(None, help="쉼표구분 세그먼트명"),
     with_ablation: bool = typer.Option(False, help="애블레이션도 함께 실행"),

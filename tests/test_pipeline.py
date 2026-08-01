@@ -651,7 +651,7 @@ def test_tier_basis_carries_sample_size_caveat():
     from fdm.concerns import TIER_BASIS, TIER_CAVEAT, TIER_ORDER
 
     assert set(TIER_BASIS) == set(TIER_ORDER)
-    assert "12건" in TIER_CAVEAT and "가공" in TIER_CAVEAT
+    assert "22건" in TIER_CAVEAT and "가공" in TIER_CAVEAT
     product = load_product("01_youth_step_saving")
     sim = simulate_product(product, n_seeds=1, k_personas=1, mode="debate")
     assert TIER_CAVEAT in build_report(product, sim), "리포트가 표본 고지를 함께 실어야 한다"
@@ -772,3 +772,101 @@ def test_lawonly_config_does_not_leak_into_other_arms():
     case = load_cases()[0]
     run_case_arm(case, "single_lawonly", n_seeds=1, config=cfg)
     assert cfg.retrieve_kinds is None, "원본 config가 변경됐다"
+
+
+# ------------------------------------------------- 시뮬레이션 ensemble 모드
+def test_simulate_ensemble_produces_cross_checked_concerns():
+    """리포트 경로에서 교차확인이 성립해야 T1(즉시 조치)이 나올 수 있다.
+
+    ensemble 모드가 없던 동안에는 sources가 항상 1개라 T1이 구조적으로
+    불가능했다. 이 테스트가 그 회귀를 막는다.
+    """
+    product = load_product("01_youth_step_saving")
+    sim = simulate_product(product, n_seeds=1, k_personas=1, mode="ensemble")
+    assert sim.mode == "ensemble"
+    seg = sim.segments[0]
+    assert seg.cases[0].mode == "ensemble"
+    assert seg.top_concerns, "우려가 모여야 한다"
+    assert any(c.cross_checked for c in seg.top_concerns), "교차확인된 우려가 있어야 한다"
+    assert all(set(c.sources) <= {"single", "debate"} for c in seg.top_concerns)
+    # 단독 모드에서는 교차확인이 성립하지 않는다
+    solo = simulate_product(product, n_seeds=1, k_personas=1, mode="debate")
+    assert not any(c.cross_checked for c in solo.segments[0].top_concerns)
+
+
+def test_benchmark_and_simulate_share_one_ensemble_impl():
+    """두 경로가 각자 ensemble을 구현하면 리포트와 벤치마크가 갈라진다."""
+    import inspect
+
+    from fdm.agents.debate import run_ensemble
+    from fdm.eval import benchmark, simulate
+
+    assert benchmark.run_ensemble is run_ensemble
+    assert simulate.RUNNERS["ensemble"] is run_ensemble
+    # 벤치마크 래퍼는 위임만 한다 (로직 복제 금지)
+    src = inspect.getsource(benchmark._run_ensemble)
+    assert "merge_concerns" not in src, "벤치마크가 병합 로직을 다시 구현했다"
+
+
+def test_ensemble_takes_label_from_single():
+    """디베이트는 깨끗한 상품 12건을 전부 warn으로 판정했다(pass 0/12).
+
+    그래서 라벨은 단발에서 취해야 한다. 이 규칙이 깨지면 리포트의 판정이 무너진다.
+    """
+    from fdm.agents.debate import run_ensemble, single_shot
+    from fdm.eval.benchmark import load_cases
+
+    case = load_cases()[0]
+    kw = dict(segment="t", seed=11, situation=case.facts)
+    e = run_ensemble(case.product, case.persona, **kw)
+    s = single_shot(case.product, case.persona, **kw)
+    assert e.verdict.suitability == s.verdict.suitability
+    assert e.verdict.intent_score == s.verdict.intent_score
+
+
+def test_rate_display_rule_needs_a_spread_to_exaggerate():
+    """강조할 최고금리가 없으면 '최고금리 위주 표시' 우려는 성립하지 않는다.
+
+    실측(pass12_A): 이 유형은 17번 제기해 1번 맞았고(정밀도 6%) 깨끗한 12건 중
+    10건에서 나왔다. 규칙 적용 시 오탐 7개 제거 / 정답 손실 0개.
+    """
+    from fdm.facts import build_fact_pack, is_contradicted
+    from fdm.products.schema import Product
+
+    base = dict(product_id="T", name="t", category="saving", summary="s")
+    persona = load_personas(limit=1)[0]
+
+    def contradicted(**kw):
+        f = build_fact_pack(Product(**base, **kw), persona)
+        return is_contradicted("rate_display_misleading", f)
+
+    # 우대조건이 명시적으로 없다 → 오인시킬 최고금리가 없다
+    assert contradicted(preferentials=[], intr_rate=3.0, intr_rate2=3.5)
+    # 금리 격차가 없다 → 마찬가지
+    assert contradicted(intr_rate=3.0, intr_rate2=3.0)
+    # 우대조건과 격차가 둘 다 있으면 우려는 살아 있어야 한다
+    assert not contradicted(
+        intr_rate=3.0, intr_rate2=4.5,
+        preferentials=[{"name": "급여이체", "rate_bonus_pct": 1.5, "requirement": "x"}],
+    )
+    # 미기재(None)는 '없음'이 아니다 — 판정하지 않는다
+    assert not contradicted(), "금리·우대조건 미기재를 '격차 없음'으로 읽으면 정당한 우려가 지워진다"
+
+
+def test_rate_display_rule_keeps_every_gold_concern():
+    """규칙이 정답 우려를 하나도 지우지 않아야 한다 (손실 없는 규칙으로 채택했다)."""
+    import json as _json
+
+    from fdm.config import BENCHMARK_DIR
+    from fdm.facts import build_fact_pack, is_contradicted
+
+    gold = _json.loads(
+        (BENCHMARK_DIR / "concern_taxonomy.json").read_text(encoding="utf-8")
+    )["gold"]
+    for c in load_cases():
+        if "rate_display_misleading" not in gold.get(c.case_id, []):
+            continue
+        f = build_fact_pack(c.product, c.persona)
+        assert not is_contradicted("rate_display_misleading", f), (
+            f"{c.case_id}: 정답 우려를 규칙이 기각한다"
+        )

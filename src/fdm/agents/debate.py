@@ -30,6 +30,7 @@ from .schema import (
     Verdict,
     count_citations,
     is_grounded,
+    merge_concerns,
     stamp_sources,
 )
 
@@ -321,4 +322,59 @@ def single_shot(
         judge_schema_repaired=repaired,
         dropped_concerns=dropped,
         elapsed_sec=round(time.time() - t0, 2),
+    )
+
+
+def run_ensemble(
+    product: Product,
+    persona: Persona,
+    *,
+    segment: str = "-",
+    seed: int = 0,
+    config: DebateConfig | None = None,
+    client: LLMClient | None = None,
+    retriever: Retriever | None = None,
+    exclude_doc_ids: set[str] | None = None,
+    situation: str = "",
+) -> DebateResult:
+    """단발 + 디베이트 병행. 우려는 합집합, 라벨은 단발에서 취한다.
+
+    측정 근거 (pass12_A, 22건):
+      · 두 방식은 서로 다른 우려를 놓친다. 각자 24/30에서 천장을 치고 합치면 29/30.
+      · 라벨은 단발이 압도적이다. 단발 77.3% vs 디베이트 47.6%이고, 특히
+        **디베이트는 깨끗한 상품 12건을 전부 warn으로 판정했다(pass 0/12).**
+        그래서 라벨·의향은 단발에서 취하고 디베이트는 우려 수집기로만 쓴다.
+      · 두 라벨이 갈리면 label_disagreement로 표시해 추가 검토 신호로 남긴다.
+
+    비용은 호출 6회/건이다. 대신 이 방식에서만 교차확인(sources 2개)이 성립하고,
+    따라서 우려 계층의 T1(즉시 조치)이 나올 수 있다.
+    """
+    kw = dict(
+        segment=segment, seed=seed, config=config, client=client,
+        retriever=retriever, exclude_doc_ids=exclude_doc_ids, situation=situation,
+    )
+    s = single_shot(product, persona, **kw)
+    d = run_debate(product, persona, **kw)
+
+    merged = merge_concerns({"single": s.verdict.concerns, "debate": d.verdict.concerns})
+    v = s.verdict.model_copy(deep=True)  # 라벨·의향은 단발 기준
+    v.concerns = merged
+    v.risks = [c.statement for c in merged]
+    v.violated_principles = sorted(
+        set(s.verdict.violated_principles) | set(d.verdict.violated_principles)
+    )
+    v.evidence = list(dict.fromkeys(s.verdict.evidence + d.verdict.evidence))
+    v.recommendations = list(dict.fromkeys(s.verdict.recommendations + d.verdict.recommendations))
+    v.self_confidence = min(s.verdict.self_confidence, d.verdict.self_confidence)
+
+    return d.model_copy(
+        update={
+            "mode": "ensemble",
+            "verdict": v,
+            "turns": s.turns + d.turns,
+            "label_disagreement": s.verdict.suitability != d.verdict.suitability,
+            "dropped_concerns": s.dropped_concerns + d.dropped_concerns,
+            "grounding_doc_ids": sorted(set(s.grounding_doc_ids) | set(d.grounding_doc_ids)),
+            "elapsed_sec": round(s.elapsed_sec + d.elapsed_sec, 2),
+        }
     )

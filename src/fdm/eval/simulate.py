@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ..agents.debate import DebateConfig, run_debate, single_shot
+from ..agents.debate import DebateConfig, run_debate, run_ensemble, single_shot
 from ..agents.schema import Concern, DebateResult, group_by_tier, merge_concerns
 from ..config import DATA_DIR, OUTPUT_DIR
 from ..llm import LLMClient
@@ -21,7 +21,14 @@ from ..products.schema import Product
 from ..rag.retriever import get_retriever
 from .confidence import ConsensusResult, aggregate, seed_plan
 
-Mode = Literal["debate", "single"]
+Mode = Literal["debate", "single", "ensemble"]
+
+# 우려 계층의 T1(즉시 조치)은 "치명 + 교차확인"인데, 교차확인은 단발과 디베이트가
+# **둘 다** 제기해야 성립한다. 따라서 ensemble에서만 T1이 나올 수 있다.
+# 실측(pass12_A, 22건): 라벨은 ensemble=single로 동일(77.3%)하지만
+# 우려 recall이 80.0% → 96.7%로 오른다. 대신 호출이 1회→6회, 깨끗한 상품
+# 1건당 오탐이 1.83→2.92개로 는다. 그래서 산출물은 반드시 계층순으로 읽혀야 한다.
+RUNNERS = {"debate": run_debate, "single": single_shot, "ensemble": run_ensemble}
 SEGMENTS_PATH = DATA_DIR / "segments.json"
 
 
@@ -104,7 +111,7 @@ def run_case(
     cfg = config or DebateConfig()
     client = client or LLMClient()
     retriever = get_retriever(cfg.use_dense)
-    runner = run_debate if mode == "debate" else single_shot
+    runner = RUNNERS[mode]
 
     runs: list[DebateResult] = []
     for seed, temp in seed_plan(n_seeds, base_temp=cfg.temperature_debater):

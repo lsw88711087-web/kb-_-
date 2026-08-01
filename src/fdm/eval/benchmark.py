@@ -19,8 +19,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ..agents.debate import DebateConfig, run_debate, single_shot
-from ..agents.schema import Suitability, merge_concerns
+from ..agents.debate import DebateConfig, run_debate, run_ensemble, single_shot
+from ..agents.schema import Suitability
 from ..config import BENCHMARK_DIR, OUTPUT_DIR
 from ..llm import LLMClient, LLMError
 from ..personas.schema import Persona
@@ -241,39 +241,15 @@ def _run_ensemble(
     retriever,
     exclude: set[str],
 ):
-    """단발 + 디베이트 병행.
+    """벤치마크용 얇은 래퍼. 실제 구현은 `agents.debate.run_ensemble`에 있다.
 
-    측정 근거: 두 방식은 서로 다른 우려를 놓친다. 디베이트는 숨은 비용·감당능력에,
-    단발은 성향 부적합·끼워팔기·한도에 강하다. 합집합이 정답 우려를 전부 잡았다.
-
-    라벨은 **단발에서 취한다** — 적중률 66.7%로 안정적이고, 디베이트는 50~75%로 흔들린다.
-    두 라벨이 갈리면 `label_disagreement`로 표시해 추가 검토 신호로 쓴다.
+    시뮬레이션 경로(리포트·UI)와 **같은 함수를 써야** 두 경로가 갈라지지 않는다.
+    이전에는 이 로직이 벤치마크에만 있어서 리포트에는 ensemble이 아예 없었다.
     """
-    kw = dict(
+    return run_ensemble(
+        case.product, case.persona,
         segment=case.case_id, seed=seed, config=cfg, client=client,
         retriever=retriever, exclude_doc_ids=exclude, situation=case.facts,
-    )
-    s = single_shot(case.product, case.persona, **kw)
-    d = run_debate(case.product, case.persona, **kw)
-
-    merged = merge_concerns({"single": s.verdict.concerns, "debate": d.verdict.concerns})
-    v = s.verdict.model_copy(deep=True)  # 라벨·의향은 단발 기준
-    v.concerns = merged
-    v.risks = [c.statement for c in merged]
-    v.violated_principles = sorted(set(s.verdict.violated_principles) | set(d.verdict.violated_principles))
-    v.evidence = list(dict.fromkeys(s.verdict.evidence + d.verdict.evidence))
-    v.recommendations = list(dict.fromkeys(s.verdict.recommendations + d.verdict.recommendations))
-    v.self_confidence = min(s.verdict.self_confidence, d.verdict.self_confidence)
-
-    return d.model_copy(
-        update={
-            "mode": "ensemble",
-            "verdict": v,
-            "turns": s.turns + d.turns,
-            "label_disagreement": s.verdict.suitability != d.verdict.suitability,
-            "dropped_concerns": s.dropped_concerns + d.dropped_concerns,
-            "elapsed_sec": round(s.elapsed_sec + d.elapsed_sec, 2),
-        }
     )
 
 
