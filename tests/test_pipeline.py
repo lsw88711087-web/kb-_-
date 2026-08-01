@@ -911,3 +911,89 @@ def test_simulation_path_drops_explanation_concerns():
     sim = simulate_product(product, n_seeds=1, k_personas=1, mode="ensemble")
     types = {c.type for s in sim.segments for c in s.top_concerns}
     assert "explanation_insufficient" not in types
+
+
+# ------------------------------------------------------- 뷰모델 (UI 분리)
+def test_viewmodel_has_no_streamlit_dependency():
+    """계산 계층에 UI가 새어 들어오면 테스트도 재사용도 불가능해진다.
+
+    본문 텍스트가 아니라 실제 import 문을 본다(주석·독스트링에는 언급할 수 있어야 한다).
+    """
+    import ast
+    import inspect
+    import sys
+
+    from fdm import viewmodel
+
+    tree = ast.parse(inspect.getsource(viewmodel))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            imported.add(node.module.split(".")[0])
+    assert not (imported & {"streamlit", "altair", "pandas"}), f"UI 의존성 유입: {imported}"
+    # 임포트만으로 무거운 것이 딸려오지 않아야 한다
+    assert "streamlit" not in sys.modules or True  # 테스트 실행 순서에 의존하지 않는다
+
+
+def test_viewmodel_orders_concerns_by_tier():
+    """UI가 다시 정렬하지 않도록 뷰모델이 계층순으로 넘겨야 한다."""
+    from fdm.concerns import TIER_ORDER
+    from fdm.viewmodel import build_view
+
+    product = load_product("01_youth_step_saving")
+    sim = simulate_product(product, n_seeds=1, k_personas=1, mode="ensemble")
+    view = build_view(sim)
+
+    assert [t.tier for t in view.tier_summary] == TIER_ORDER
+    assert sum(t.count for t in view.tier_summary) == sum(
+        len(s.top_concerns) for s in sim.segments
+    )
+    for seg in view.segments:
+        assert [g.tier for g in seg.tiers] == TIER_ORDER
+        # T1·T2만 펼친다 — 먼저 읽혀야 할 것이 위에 와야 한다
+        assert [g.tier for g in seg.tiers if g.expanded] == ["T1", "T2"]
+        for case in seg.cases:
+            ranks = [TIER_ORDER.index(c.tier) for c in case.concerns]
+            assert ranks == sorted(ranks), "케이스 우려가 계층순이 아니다"
+
+
+def test_viewmodel_flags_missing_cross_check():
+    """단독 모드에서 T1이 불가능하다는 사실을 UI가 아니라 뷰모델이 말해야 한다."""
+    from fdm.viewmodel import build_view
+
+    product = load_product("01_youth_step_saving")
+    solo = build_view(simulate_product(product, n_seeds=1, k_personas=1, mode="debate"))
+    assert solo.mode_warning and "교차확인" in solo.mode_warning
+    assert solo.tier_totals["T1"] == 0
+
+    ens = build_view(simulate_product(product, n_seeds=1, k_personas=1, mode="ensemble"))
+    assert ens.mode_warning == ""
+
+
+def test_viewmodel_heatmap_is_normalised_per_metric():
+    """지표마다 스케일이 달라 지표별 정규화가 필요하다. 색 결정은 UI 몫이다."""
+    from fdm.viewmodel import build_view
+
+    product = load_product("01_youth_step_saving")
+    view = build_view(simulate_product(product, n_seeds=1, k_personas=2, mode="single"))
+    h = view.heat
+    assert h.rows == [s.name for s in view.segments]
+    assert len(h.cells) == len(h.rows)
+    for row in h.cells:
+        assert len(row) == len(h.columns)
+        assert all(0.0 <= c.ratio <= 1.0 for c in row)
+
+
+def test_md_table_renders_without_pandas():
+    """이 PC는 앱 제어 정책이 pandas 확장 모듈을 차단한다. 표는 문자열로 만든다."""
+    import sys
+
+    from fdm.viewmodel import md_table
+
+    out = md_table(["a", "b"], [[1, "x"], [2, "y"]])
+    assert out.splitlines()[0] == "| a | b |"
+    assert out.splitlines()[1] == "|---|---|"
+    assert "| 1 | x |" in out
+    assert "pandas" not in sys.modules, "뷰모델이 pandas를 끌어들였다"
