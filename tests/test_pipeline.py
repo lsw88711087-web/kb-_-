@@ -870,3 +870,44 @@ def test_rate_display_rule_keeps_every_gold_concern():
         assert not is_contradicted("rate_display_misleading", f), (
             f"{c.case_id}: 정답 우려를 규칙이 기각한다"
         )
+
+
+def test_explanation_concern_needs_a_sales_act_to_judge():
+    """설명의무는 '어떻게 팔았는가'에 대한 판정이다.
+
+    분류체계의 verify_with도 "설명 확인서·녹취 이행률"이다. 아직 팔지 않은
+    상품 설계 검증 단계에서 설명의무 위반을 논하는 것은 범주 오류다.
+    실측 배경: 이 유형은 오탐 15개로 최대 단일 원인이었고 깨끗한 12건 전부에서 나왔다.
+    """
+    from fdm.facts import build_fact_pack, is_contradicted
+
+    case = load_cases()[0]
+    design = build_fact_pack(case.product, case.persona)                      # 판매 전
+    sold = build_fact_pack(case.product, case.persona, situation=case.facts)  # 판매 정황 있음
+
+    assert design.has_sales_context is False
+    assert sold.has_sales_context is True
+    assert is_contradicted("explanation_insufficient", design), "설계 단계에서는 기각돼야 한다"
+    assert not is_contradicted("explanation_insufficient", sold), "정황이 있으면 판정 대상이다"
+
+
+def test_benchmark_keeps_explanation_concerns():
+    """이 규칙은 실제 경로를 겨냥한 것이지 벤치마크 점수를 올리려는 게 아니다.
+
+    정답셋 22건은 전부 판매 정황이 있으므로 규칙이 발동하면 안 된다.
+    발동한다면 정답셋에 맞춰 최적화한 것이 되어 측정이 오염된다.
+    """
+    from fdm.facts import build_fact_pack, is_contradicted
+
+    for c in load_cases():
+        assert c.facts.strip(), f"{c.case_id}: 정답셋 케이스에는 판매 정황이 있어야 한다"
+        f = build_fact_pack(c.product, c.persona, situation=c.facts)
+        assert not is_contradicted("explanation_insufficient", f), f"{c.case_id}에서 발동했다"
+
+
+def test_simulation_path_drops_explanation_concerns():
+    """리포트 경로(판매 전)에서는 설명의무 우려가 산출물에 남지 않아야 한다."""
+    product = load_product("01_youth_step_saving")
+    sim = simulate_product(product, n_seeds=1, k_personas=1, mode="ensemble")
+    types = {c.type for s in sim.segments for c in s.top_concerns}
+    assert "explanation_insufficient" not in types

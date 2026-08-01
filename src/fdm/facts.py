@@ -110,6 +110,15 @@ class FactPack(BaseModel):
     )
     is_lump_sum_repayment: bool | None = None
 
+    has_sales_context: bool = Field(
+        default=False,
+        description=(
+            "판매 정황(설명·권유 행위)이 주어졌는가. "
+            "설명의무는 **판매 행위**에 대한 판정이므로(분류체계의 verify_with도 "
+            "'설명 확인서·녹취 이행률'이다), 아직 팔지 않은 설계 단계에서는 판정 대상이 아니다"
+        ),
+    )
+
     # 플래그 — 값으로 표현하면 왜곡되는 상태
     surplus_nonpositive: bool = Field(
         default=False, description="월 여유자금이 0 이하. 이때 부담률은 계산하지 않는다"
@@ -171,7 +180,12 @@ class FactPack(BaseModel):
         return "\n".join(L)
 
 
-def build_fact_pack(product: Product, persona: Persona) -> FactPack:
+def build_fact_pack(product: Product, persona: Persona, *, situation: str = "") -> FactPack:
+    """`situation`은 실제로 이루어진 판매 정황이다.
+
+    상품 설계 단계 시뮬레이션에는 판매 행위가 없어 비어 있고, 벤치마크에는 조정례의
+    판매 정황이 들어온다. 이 유무가 설명의무 우려의 판정 가능 여부를 가른다.
+    """
     f = persona.finance
     income = f.monthly_income_manwon if f else 0
     surplus = f.monthly_surplus_manwon if f else 0
@@ -188,6 +202,7 @@ def build_fact_pack(product: Product, persona: Persona) -> FactPack:
         surplus_ratio=round(surplus / income, 3) if income > 0 else 0.0,
         age=persona.age,
         is_senior=persona.age >= 65,
+        has_sales_context=bool(situation.strip()),
         # 미기재(None)는 None으로 전파한다. bool()로 변환하면 '모름'이 '아니오'가 된다.
         rate_is_variable=None if product.rate_basis is None else product.rate_basis == "변동",
         has_preferentials=None if product.preferentials is None else bool(product.preferentials),
@@ -339,6 +354,16 @@ CONTRADICTION_RULES: dict[str, Callable[[FactPack], bool]] = {
     "fee_hidden": lambda f: f.has_fees is False,
     # 고령자가 아닌 페르소나
     "senior_vulnerability": lambda f: f.age < 60,
+    # 판매 행위가 없는데 설명의무 위반 우려.
+    #
+    # 설명의무는 **어떻게 팔았는가**에 대한 판정이다(분류체계 verify_with:
+    # "설명 확인서·녹취 이행률"). 상품 설계 검증 단계에는 아직 판매가 없으므로
+    # 이 유형은 판정 대상 자체가 아니다 — 제기되면 범주 오류다.
+    #
+    # 실측 배경: 이 유형은 오탐 15개로 최대 단일 원인이었고, 깨끗한 상품 12건
+    # **전부**에서 나왔다. 다만 이 규칙이 겨냥하는 것은 벤치마크(정황 있음)가 아니라
+    # 실제 시뮬레이션 경로(정황 없음)다. 벤치마크 점수는 이 규칙으로 오르지 않는다.
+    "explanation_insufficient": lambda f: not f.has_sales_context,
 }
 
 

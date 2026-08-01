@@ -144,7 +144,7 @@ def run_debate(
     grounding = (
         "\n".join(f"{i+1}. {h.doc.cite()}" for i, h in enumerate(hits)) or "(검색된 근거 없음)"
     )
-    facts = build_fact_pack(product, persona) if cfg.use_fact_pack else None
+    facts = build_fact_pack(product, persona, situation=situation) if cfg.use_fact_pack else None
     ctx = P.context_block(
         product.prompt_block(),
         persona.prompt_block(),
@@ -274,7 +274,7 @@ def single_shot(
         doc_ids = [h.doc.doc_id for h in hits]
         grounding = "\n".join(f"{i+1}. {h.doc.cite()}" for i, h in enumerate(hits)) or "(없음)"
 
-    facts = build_fact_pack(product, persona) if cfg.use_fact_pack else None
+    facts = build_fact_pack(product, persona, situation=situation) if cfg.use_fact_pack else None
     ctx = P.context_block(
         product.prompt_block(),
         persona.prompt_block(),

@@ -62,6 +62,9 @@ def load_corpus() -> list[Doc]:
             # 정답셋 확대의 효과를 격리하려면 코퍼스는 조정례 12건으로 고정해야 한다.
             if c.get("origin", "dispute") != "dispute":
                 continue
+            # 제목의 `— 판정 {label}`을 빼는 실험(FDM_CASE_TITLE=neutral)은 측정 후 되돌렸다.
+            # outputs/neutral_A.json: 오탐은 안 줄고(2.58→2.50개) 탐지력만 나빠졌다.
+            # 자세한 것은 dispute_cases.json의 _meta._neutral_title_rolled_back 참고.
             docs.append(
                 Doc(
                     doc_id=c["case_id"],
