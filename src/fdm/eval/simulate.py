@@ -9,13 +9,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..agents.debate import DebateConfig, run_debate, run_ensemble, single_shot
 from ..agents.schema import Concern, DebateResult, group_by_tier, merge_concerns
 from ..config import DATA_DIR, OUTPUT_DIR
-from ..llm import LLMClient
-from ..personas.loader import load_personas, sample_cohort
+from ..llm import LLMClient, LLMError
+from ..personas.loader import (
+    PersonaSource,
+    is_nemotron_persona,
+    load_personas,
+    persona_source_counts,
+    require_nemotron_personas,
+    sample_cohort,
+)
 from ..personas.schema import Persona, Segment
 from ..products.schema import Product
 from ..rag.retriever import get_retriever
@@ -74,6 +81,8 @@ class SegmentResult(BaseModel):
 
 
 class SimulationReport(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     product_id: str
     product_name: str
     mode: Mode
@@ -82,6 +91,10 @@ class SimulationReport(BaseModel):
     backend: str = ""
     model_small: str = ""
     model_judge: str = ""
+    persona_pool_size: int = 0
+    persona_nemotron_count: int = 0
+    persona_synthetic_count: int = 0
+    persona_source_counts: dict[str, int] = Field(default_factory=dict)
     segments: list[SegmentResult] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -114,21 +127,60 @@ def run_case(
     runner = RUNNERS[mode]
 
     runs: list[DebateResult] = []
+    failures: list[str] = []
     for seed, temp in seed_plan(n_seeds, base_temp=cfg.temperature_debater):
         c = DebateConfig(**{**cfg.__dict__, "temperature_debater": temp})
-        runs.append(
-            runner(
-                product,
-                persona,
-                segment=segment,
-                seed=seed,
-                config=c,
-                client=client,
-                retriever=retriever,
-                exclude_doc_ids=exclude_doc_ids,
+        try:
+            runs.append(
+                runner(
+                    product,
+                    persona,
+                    segment=segment,
+                    seed=seed,
+                    config=c,
+                    client=client,
+                    retriever=retriever,
+                    exclude_doc_ids=exclude_doc_ids,
+                )
             )
+        except LLMError as e:
+            failures.append(f"seed={seed}: {str(e)[:240]}")
+    if not runs:
+        return ConsensusResult(
+            product_id=product.product_id,
+            product_name=product.name,
+            persona_id=persona.persona_id,
+            segment=segment,
+            n_runs=0,
+            mode=mode,
+            modal_suitability="warn",
+            label_counts={"error": len(failures)},
+            label_agreement=0.0,
+            intent_mean=50.0,
+            intent_std=0.0,
+            intent_min=50,
+            intent_max=50,
+            judge_self_confidence=0.0,
+            ungrounded_turns=0,
+            confidence=0.0,
+            confidence_level="low",
+            needs_review=True,
+            risks=["LLM JSON 파싱/호출 실패로 판정 불가"] + failures[:2],
+            recommendations=["해당 상품-페르소나 케이스를 낮은 workers 또는 작은 seeds로 재실행"],
         )
-    return aggregate(runs)
+    cr = aggregate(runs)
+    if failures:
+        cr = cr.model_copy(
+            update={
+                "confidence": min(cr.confidence, 0.54),
+                "confidence_level": "low",
+                "needs_review": True,
+                "risks": cr.risks + ["일부 시드에서 LLM JSON 파싱/호출 실패"] + failures[:2],
+                "recommendations": cr.recommendations
+                + ["실패한 시드는 추가 재실행 후 결과 안정성 확인"],
+            }
+        )
+    return cr
 
 
 # ------------------------------------------------------------------- 상품 시뮬레이션
@@ -136,23 +188,39 @@ def simulate_product(
     product: Product,
     *,
     segment_names: list[str] | None = None,
+    segments: list[Segment] | None = None,
     k_personas: int = 4,
     n_seeds: int = 3,
     mode: Mode = "debate",
     workers: int = 4,
     config: DebateConfig | None = None,
     personas: list[Persona] | None = None,
+    persona_source: PersonaSource = "auto",
+    require_real_personas: bool = False,
     progress: bool = True,
 ) -> SimulationReport:
     from ..config import SETTINGS
 
     cfg = config or DebateConfig()
     client = LLMClient()
-    pool = personas if personas is not None else load_personas()
-    names = segment_names or product.target_segments or None
-    segments = load_segments(names)
-    if not segments:
-        segments = load_segments()
+    pool = (
+        personas
+        if personas is not None
+        else load_personas(
+            source=persona_source,
+            allow_synthetic_fallback=not require_real_personas,
+        )
+    )
+    if require_real_personas:
+        require_nemotron_personas(pool)
+    source_counts = persona_source_counts(pool)
+    nemotron_count = sum(1 for p in pool if is_nemotron_persona(p))
+    synthetic_count = len(pool) - nemotron_count
+    if segments is None:
+        names = segment_names or product.target_segments or None
+        segments = load_segments(names)
+        if not segments:
+            segments = load_segments()
 
     jobs: list[tuple[Segment, Persona]] = []
     for seg in segments:
@@ -215,10 +283,15 @@ def simulate_product(
         backend=SETTINGS.backend,
         model_small=SETTINGS.model_small,
         model_judge=SETTINGS.model_judge,
+        persona_pool_size=len(pool),
+        persona_nemotron_count=nemotron_count,
+        persona_synthetic_count=synthetic_count,
+        persona_source_counts=source_counts,
         segments=seg_results,
         notes=[
             "합성 페르소나 기반 결과다. 변수 간 결합분포 정합성은 검증되지 않았으므로 탐색·경보용으로만 사용한다.",
             "저신뢰(low) 세그먼트는 추가 검증 대상이다.",
+            "교차확인 우려 계층(T1)은 ensemble 모드에서만 성립한다.",
         ],
     )
 

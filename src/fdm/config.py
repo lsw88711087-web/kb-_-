@@ -27,6 +27,43 @@ def _env(key: str, default: str) -> str:
     return v if v not in (None, "") else default
 
 
+def _env_any(keys: tuple[str, ...], default: str) -> str:
+    for key in keys:
+        v = os.environ.get(key)
+        if v not in (None, ""):
+            return v
+    return default
+
+
+def _default_model(role: str) -> str:
+    backend = os.environ.get("FDM_BACKEND", "mock")
+    if backend == "gemini":
+        return "gemini-3.6-flash"
+    if backend == "openai":
+        return "gpt-4.1-mini" if role == "small" else "gpt-4.1"
+    return "qwen3:8b"
+
+
+def _default_api_key() -> str:
+    backend = os.environ.get("FDM_BACKEND", "mock")
+    if backend == "gemini":
+        return _env_any(("FDM_GEMINI_API_KEY", "GEMINI_API_KEY", "FDM_LLM_API_KEY"), "")
+    if backend == "openai":
+        return _env_any(("FDM_OPENAI_API_KEY", "OPENAI_API_KEY", "FDM_LLM_API_KEY"), "")
+    if backend == "vllm":
+        return _env_any(("FDM_VLLM_API_KEY", "FDM_LLM_API_KEY"), "")
+    return _env_any(
+        (
+            "FDM_LLM_API_KEY",
+            "FDM_VLLM_API_KEY",
+            "FDM_OPENAI_API_KEY",
+            "FDM_GEMINI_API_KEY",
+            "GEMINI_API_KEY",
+        ),
+        "",
+    )
+
+
 @dataclass
 class Settings:
     backend: str = field(default_factory=lambda: _env("FDM_BACKEND", "mock"))
@@ -34,35 +71,45 @@ class Settings:
         default_factory=lambda: _env("FDM_OLLAMA_BASE_URL", "http://localhost:11434/v1")
     )
     vllm_base_url: str = field(
-        default_factory=lambda: _env("FDM_VLLM_BASE_URL", "http://localhost:8000/v1")
+        default_factory=lambda: _env(
+            "FDM_VLLM_BASE_URL",
+            _env("FDM_LLM_BASE_URL", "http://localhost:8000/v1"),
+        )
     )
-    model_small: str = field(default_factory=lambda: _env("FDM_MODEL_SMALL", "qwen3:8b"))
-    model_judge: str = field(default_factory=lambda: _env("FDM_MODEL_JUDGE", "qwen3:8b"))
+    openai_base_url: str = field(
+        default_factory=lambda: _env("FDM_OPENAI_BASE_URL", "https://api.openai.com/v1")
+    )
+    gemini_base_url: str = field(
+        default_factory=lambda: _env(
+            "FDM_GEMINI_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+    )
+    llm_api_key: str = field(default_factory=_default_api_key)
+    model_small: str = field(default_factory=lambda: _env("FDM_MODEL_SMALL", _default_model("small")))
+    model_judge: str = field(default_factory=lambda: _env("FDM_MODEL_JUDGE", _default_model("judge")))
     timeout: float = field(default_factory=lambda: float(_env("FDM_TIMEOUT", "180")))
     max_tokens: int = field(default_factory=lambda: int(_env("FDM_MAX_TOKENS", "1200")))
+    gemini_reasoning_effort: str = field(
+        default_factory=lambda: _env("FDM_GEMINI_REASONING_EFFORT", "low")
+    )
     # Qwen3·EXAONE 등 하이브리드 추론 모델의 사고 모드. 켜면 2~3배 느리고
     # 토큰 예산을 사고가 다 써서 본문이 잘리는 일이 생긴다. 기본은 끔.
     think: bool = field(default_factory=lambda: _env("FDM_THINK", "0") not in ("0", "false", "False"))
     keep_alive: str = field(default_factory=lambda: _env("FDM_KEEP_ALIVE", "30m"))
-    # 컨텍스트 창. Ollama 기본값 4096은 부족하다 — 디베이트 심판 프롬프트가
-    # (상품+페르소나+사실팩+근거 6건+4턴 전문) 실측 3,434토큰이고 생성 1,200을
-    # 더하면 4,634라 초과한다. 초과하면 앞부분(상품 정의)이 잘리고 재계산으로 느려진다.
-    #
-    # 6144로 둔 이유: 최장 호출(약 5,000토큰)을 여유 있게 담으면서 KV 캐시가
-    # 8GB VRAM에서 CPU 오프로드를 유발하지 않는 선이다(4096 대비 +약 300MB).
-    # VRAM이 큰 환경(Colab 등)에서는 FDM_NUM_CTX=8192 이상으로 올려도 된다.
+    # Ollama 기본 컨텍스트(4096)는 사실팩+근거+디베이트 전문을 담기에 부족할 수 있다.
+    # 6144는 8GB VRAM에서도 부담을 크게 늘리지 않으면서 잘림을 줄이는 보수적인 기본값이다.
     num_ctx: int = field(default_factory=lambda: int(_env("FDM_NUM_CTX", "6144")))
-
-    # 토론자(옹호자·회의론자·페르소나) 온도.
-    # 0.8이 기본이었으나, 시드를 바꿔 재측정하니 디베이트의 우려 recall이 13.6%p 흔들렸다
-    # (단발 계열은 1%p 이내). 토론 3턴이 매번 다른 논점을 내고 심판이 무엇을 채택할지가
-    # 달라지기 때문이다. 다양성과 안정성의 교환이므로 값을 바꿔가며 측정할 수 있게 열어 둔다.
+    # 토론 온도는 성능 측정 중 과잉 변동이 관측되어 기본값을 낮췄다.
     temp_debater: float = field(default_factory=lambda: float(_env("FDM_TEMP_DEBATER", "0.5")))
-    # 심판 온도. 낮게 유지한다 — 이 값 덕분에 라벨은 시드에 무관하게 결정론적이었다.
     temp_judge: float = field(default_factory=lambda: float(_env("FDM_TEMP_JUDGE", "0.2")))
 
     @property
     def base_url(self) -> str:
+        if self.backend == "gemini":
+            return self.gemini_base_url
+        if self.backend == "openai":
+            return self.openai_base_url
         return self.vllm_base_url if self.backend == "vllm" else self.ollama_base_url
 
 

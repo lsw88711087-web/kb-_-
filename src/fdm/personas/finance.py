@@ -104,8 +104,6 @@ def attach_finance(p: Persona, *, overwrite: bool = False) -> Persona:
         if has_debt
         else 0
     )
-    # 소득 배수 상한: 대출은 소득 심사를 통과해야 발생하므로, 소득과 무관하게 뽑은
-    # 부채는 비현실적 조합('무직인데 부채 1억')을 만든다. 직업별 상한으로 잘라낸다.
     if debt > 0:
         multiple = params["debt_cap_income_multiple_default"]
         for kw, m in params["debt_cap_income_multiple_by_occupation"].items():

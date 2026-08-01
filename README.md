@@ -21,6 +21,12 @@ LLM 없이 파이프라인 배관만 확인 (결정론적 mock 백엔드):
 FDM_BACKEND=mock uv run fdm doctor
 ```
 
+Nemotron-Personas-Korea를 실제로 불러오는지 강제 점검:
+
+```bash
+uv run --extra personas fdm doctor --persona-source hf --require-real-personas
+```
+
 로컬 Qwen3 8B로 실행:
 
 ```bash
@@ -63,6 +69,30 @@ uv run fdm simulate 01_youth_step_saving --seeds 3 --personas-per-segment 4 --wi
 uv run fdm ablation --seeds 2
 ```
 
+여러 상품을 `single` 대조군과 `debate` 실험군으로 일괄 비교:
+
+```bash
+uv run fdm benchmark-products --seeds 2 --personas-per-segment 3
+```
+
+브라우저에서 결과를 보려면:
+
+```bash
+python -m http.server 8899
+```
+
+그 다음 [http://localhost:8899/benchmark_viewer.html](http://localhost:8899/benchmark_viewer.html)을 열면
+`outputs/product_benchmark.json`을 자동으로 읽는다. 파일을 직접 더블클릭해서 열 때는
+브라우저 보안 제한 때문에 JSON 자동 로딩이 막힐 수 있으므로 화면에 `product_benchmark.json`을 드롭하면 된다.
+
+Colab에서 Nemotron 로딩 실패를 숨기지 않으려면:
+
+```bash
+uv run --extra personas fdm benchmark-products \
+  --persona-source hf --require-real-personas \
+  --seeds 2 --personas-per-segment 3
+```
+
 대시보드:
 
 ```bash
@@ -72,7 +102,9 @@ uv run python -m streamlit run ui/app.py
 (`uv run streamlit ...` 형태는 Windows 앱 제어 정책이 `streamlit.exe` 실행을 차단하는 환경이 있어
 `python -m streamlit` 로 띄우는 쪽이 안전하다.)
 
-결과물은 `outputs/`에 저장된다 (`sim_*.json`, `ablation.json`, `report_*.md`).
+결과물은 `outputs/`에 저장된다 (`sim_*.json`, `ablation.json`, `product_benchmark.json`,
+`product_benchmark.md`, `report_*.md`). `benchmark_viewer.html`은 `product_benchmark.json`을
+시각화하는 정적 뷰어다.
 
 ## 3. 파이프라인
 
@@ -146,11 +178,15 @@ confidence = 0.5 × 라벨합의도 + 0.3 × 점수안정성(1 − σ/25) + 0.2 
 지표: 적합성 3분류 적중률, 위험탐지(warn·fail 대 pass) 정확도, macro F1, 위반원칙 재현율, LLM 호출 수(비용).
 평가 시 해당 사례 문서는 검색에서 제외해 **정답 누출을 막는다**.
 
+`fdm benchmark-products`는 등록된 여러 상품을 같은 페르소나 풀에서 `single`과 `debate`로 각각 돌린다.
+상품별 가입률·가입의향·fail 비율·저신뢰 비율을 비교하고, KOSIS 세그먼트 보유율과의 MAE/Spearman ρ를
+`outputs/product_benchmark.json`과 `outputs/product_benchmark.md`에 저장한다.
+
 ## 4. 데이터
 
 | 경로 | 내용 | 상태 |
 |---|---|---|
-| `data/personas/*.jsonl` | Nemotron-Personas-Korea 캐시 | 없으면 HF 다운로드 → 실패 시 합성 폴백 |
+| `data/personas/*.jsonl` | Nemotron-Personas-Korea 캐시 | `auto` 모드에서는 없으면 HF 다운로드 → 실패 시 합성 폴백 |
 | `data/products/*.json` | 예시 신상품 5종 | 가상 상품 (금융상품 한눈에 API 필드 참고) |
 | `data/segments.json` | 타깃 세그먼트 9종 | — |
 | `data/rag/laws/*.jsonl` | 금소법 6대 판매원칙 + 감독 가이드 | 조문 요약 (law.go.kr 원문으로 교체 권장) |
@@ -166,6 +202,10 @@ uv sync --extra personas
 
 `load_personas(source="hf")`가 `nvidia/Nemotron-Personas-Korea`를 내려받는다. 내려받은 뒤
 `data/personas/nemotron.jsonl`로 저장해두면 이후 오프라인으로 재현된다.
+
+명시적으로 `source="hf"` 또는 CLI의 `--persona-source hf --require-real-personas`를 쓰면 실패 시
+합성 폴백으로 넘어가지 않고 에러를 낸다. 각 시뮬레이션/리포트에는 페르소나 출처별 건수
+(`Nemotron`, `synthetic-fallback`)가 저장된다.
 
 ## 5. Colab 전환
 
