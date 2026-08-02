@@ -320,9 +320,18 @@ def ablation(
     seeds: int = typer.Option(2),
     limit: Optional[int] = typer.Option(None, help="사례 수 제한"),
     seed_base: int = typer.Option(7000, help="시드 시작값. 바꿔서 재실행하면 표집 노이즈를 측정"),
+    arms: Optional[str] = typer.Option(
+        None, help="쉼표로 구분한 arm 목록 (예: ensemble 또는 single,debate). 기본은 5종 전부"
+    ),
+    out: Optional[str] = typer.Option(
+        None, help="저장 경로. 기본 outputs/ablation.json — 조건별로 나눠 저장할 때 쓴다"
+    ),
 ) -> None:
     """분쟁조정 정답셋으로 단발 vs 디베이트 적중률을 비교한다."""
-    rep = run_ablation(n_seeds=seeds, limit=limit, seed_base=seed_base)
+    kw = {}
+    if arms:
+        kw["arms"] = tuple(a.strip() for a in arms.split(",") if a.strip())
+    rep = run_ablation(n_seeds=seeds, limit=limit, seed_base=seed_base, **kw)
     t = Table("조건", "적중률", "위험탐지", "macroF1", "위반원칙재현율", "LLM호출")
     for a in rep.arms:
         t.add_row(a.arm, f"{a.accuracy:.1%}", f"{a.risk_accuracy:.1%}", f"{a.macro_f1:.3f}",
@@ -332,7 +341,7 @@ def ablation(
         f"디베이트 − 단발(RAG): 적중률 {rep.delta_accuracy_vs_single:+.1%}, "
         f"위험탐지 {rep.delta_risk_accuracy_vs_single:+.1%}"
     )
-    console.print(f"저장: {rep.save()}")
+    console.print(f"저장: {rep.save(out)}")
 
 
 @app.command("report")

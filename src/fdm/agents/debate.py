@@ -21,6 +21,7 @@ from ..llm import LLMClient, extract_json
 from ..personas.schema import Persona
 from ..products.schema import Product
 from ..rag.retriever import Retriever, get_retriever
+from ..situation import screen_by_situation
 from . import prompts as P
 from .schema import (
     REQUIRED_VERDICT_KEYS,
@@ -54,6 +55,9 @@ class DebateConfig:
     enforce_grounding: bool = True  # 근거 없는 발화는 1회 재요청
     use_fact_pack: bool = True  # 파생 지표를 계산해 주입 (사전 예방)
     screen_contradictions: bool = True  # 계산값과 모순되는 우려를 기각 (사후 차단)
+    # 판매 정황이 "설명했다"고 명시한 항목의 '설명 부족' 주장을 기각한다 (situation.py).
+    # `screen_contradictions`와 달리 사실팩이 아니라 정황 텍스트를 근거로 한다.
+    screen_situation: bool = field(default_factory=lambda: SETTINGS.screen_situation)
 
 
 def _query_for(product: Product, persona: Persona) -> str:
@@ -204,9 +208,16 @@ def run_debate(
     dropped: list[str] = []
     if facts is not None and cfg.screen_contradictions:
         verdict.concerns, dropped = screen_typed_concerns(verdict.concerns, facts)
-        # 계산값이 요구하는 최소 심각도로 승격 (라벨은 건드리지 않는다)
+    # 정황이 "설명했다"고 명시한 항목의 '설명 부족' 주장을 기각한다.
+    # 사실팩이 아니라 정황 텍스트가 근거이므로 별도 조건이다.
+    if cfg.screen_situation:
+        verdict.concerns, dropped_sit = screen_by_situation(verdict.concerns, situation)
+        dropped += dropped_sit
+    if facts is not None and cfg.screen_contradictions:
+        # 계산값이 요구하는 최소 심각도로 승격 (라벨은 건드리지 않는다).
+        # 기각 뒤에 돌린다 — 곧 목록에서 빠질 우려의 심각도를 올릴 이유가 없다.
         verdict.concerns = apply_severity_floors(verdict.concerns, facts)
-        verdict.risks = [c.statement for c in verdict.concerns]
+    verdict.risks = [c.statement for c in verdict.concerns]
     stamp_sources(verdict.concerns, "debate")
     turns.append(
         Turn(
@@ -296,9 +307,16 @@ def single_shot(
     dropped: list[str] = []
     if facts is not None and cfg.screen_contradictions:
         verdict.concerns, dropped = screen_typed_concerns(verdict.concerns, facts)
-        # 계산값이 요구하는 최소 심각도로 승격 (라벨은 건드리지 않는다)
+    # 정황이 "설명했다"고 명시한 항목의 '설명 부족' 주장을 기각한다.
+    # 사실팩이 아니라 정황 텍스트가 근거이므로 별도 조건이다.
+    if cfg.screen_situation:
+        verdict.concerns, dropped_sit = screen_by_situation(verdict.concerns, situation)
+        dropped += dropped_sit
+    if facts is not None and cfg.screen_contradictions:
+        # 계산값이 요구하는 최소 심각도로 승격 (라벨은 건드리지 않는다).
+        # 기각 뒤에 돌린다 — 곧 목록에서 빠질 우려의 심각도를 올릴 이유가 없다.
         verdict.concerns = apply_severity_floors(verdict.concerns, facts)
-        verdict.risks = [c.statement for c in verdict.concerns]
+    verdict.risks = [c.statement for c in verdict.concerns]
     stamp_sources(verdict.concerns, "single")
     turn = Turn(
         role="single",

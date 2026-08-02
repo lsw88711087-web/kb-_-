@@ -997,3 +997,116 @@ def test_md_table_renders_without_pandas():
     assert out.splitlines()[1] == "|---|---|"
     assert "| 1 | x |" in out
     assert "pandas" not in sys.modules, "뷰모델이 pandas를 끌어들였다"
+
+
+# --------------------------------------------------------------------------
+# 판매 정황 모순 스크리닝 (FDM_SCREEN_SITUATION) — src/fdm/situation.py
+#
+# 사후 필터라 라벨을 바꾸지 않는다. 사전 손익(rate_A dry-run):
+#   ensemble 오탐 −10 / 정답 손실 0, 깨끗한 건당 2.58 → 1.75, recall 96.7% 불변.
+#
+# 가장 위험한 실패 양식은 **부정문을 긍정으로 읽는 것**이다. 그러면 gold=fail 케이스의
+# 정답 우려를 지운다. 아래 테스트가 그 경로를 고정한다.
+# --------------------------------------------------------------------------
+
+
+def _situation_of(case_id: str) -> str:
+    from fdm.eval.benchmark import load_cases
+
+    return next(c for c in load_cases() if c.case_id == case_id).facts
+
+
+def test_situation_detects_explicit_disclosure():
+    """정황이 '설명했다'고 명시한 항목만 잡는다."""
+    from fdm.situation import disclosed_topics
+
+    # CASE-014: "중도해지 시 불이익을 설명했다"
+    assert "early_termination" in disclosed_topics(_situation_of("CASE-014"))
+    # CASE-006: "금리·중도해지이율·만기 후 이율을 설명하고 확인 서명을 받았다"
+    #   나열 뒤에 동사가 오는 문형이라, 나열을 쪼개면 앞 항목을 놓친다
+    assert "early_termination" in disclosed_topics(_situation_of("CASE-006"))
+    # 정황이 비면 아무것도 하지 않는다
+    assert disclosed_topics("") == set()
+
+
+def test_situation_never_reads_negation_as_disclosure():
+    """부정문을 '설명함'으로 읽으면 gold=fail의 정답 우려를 지운다.
+
+    실측된 버그다 — 초기 구현이 아래 셋을 전부 반대로 읽었다.
+    """
+    from fdm.situation import disclosed_topics
+
+    # CASE-004(fail) "…변동 시나리오는 안내받지 못했다"
+    assert "rate_structure" not in disclosed_topics(_situation_of("CASE-004"))
+    # CASE-007(fail) "…잔액 누적 구조는 설명하지 않았다"
+    assert "fee" not in disclosed_topics(_situation_of("CASE-007"))
+
+
+def test_situation_treats_partial_compliance_as_not_disclosed():
+    """'형식적으로만', '대부분' 같은 부분이행은 기각 근거가 못 된다."""
+    from fdm.situation import disclosed_topics
+
+    # CASE-010(warn) "…안내가 형식적으로만 이루어졌다"
+    assert "deposit_protection" not in disclosed_topics(_situation_of("CASE-010"))
+    # CASE-011(warn) "…구두 설명은 '대부분 연장된다'는 취지였다"
+    assert "maturity" not in disclosed_topics(_situation_of("CASE-011"))
+
+
+def test_situation_screens_only_insufficiency_claims():
+    """같은 항목이라도 '설명 부족'만 기각한다. 조건 자체의 불리함은 남긴다."""
+    from fdm.agents.schema import Concern
+    from fdm.situation import screen_by_situation
+
+    sit = _situation_of("CASE-014")  # 중도해지 불이익을 설명했다
+    concerns = [
+        Concern(type="explanation_insufficient", statement="중도해지 불이익 설명이 부족하다"),
+        Concern(type="early_termination_penalty", statement="중도해지이율이 지나치게 낮다"),
+    ]
+    kept, dropped = screen_by_situation(concerns, sit)
+    assert len(dropped) == 1 and "설명" in dropped[0]
+    assert len(kept) == 1 and kept[0].type == "early_termination_penalty"
+
+
+def test_situation_does_not_fire_on_violation_cases():
+    """위반 케이스에서 발동하면 정답 우려를 잃는다. dry-run 실측도 0건이었다."""
+    from fdm.agents.schema import Concern
+    from fdm.eval.benchmark import load_cases
+    from fdm.situation import screen_by_situation
+
+    fired = []
+    for case in load_cases():
+        if case.label == "pass":
+            continue
+        # 그 케이스의 정답 우려를 그대로 제기했다고 가정한다
+        from fdm.concerns import load_taxonomy
+
+        gold = load_taxonomy()["gold"].get(case.case_id, [])
+        concerns = [
+            Concern(type=t, statement=f"{t} 관련 설명이 부족하다", anchor="x") for t in gold
+        ]
+        _, dropped = screen_by_situation(concerns, case.facts)
+        if dropped:
+            fired.append((case.case_id, dropped))
+    assert not fired, f"위반 케이스에서 정답 우려가 기각됐다: {fired}"
+
+
+def test_screen_situation_is_off_by_default_and_keeps_labels(personas):
+    """기본 꺼짐 — 기준선(rate_A)과 나란히 두려면 그래야 한다.
+
+    켜도 라벨은 못 바꾼다. 심판 호출 뒤에 도는 사후 필터라 LLM 입력이 동일하다.
+    """
+    from fdm.agents.debate import DebateConfig, single_shot
+    from fdm.products.schema import load_product
+
+    assert DebateConfig().screen_situation is False
+
+    product = load_product("01_youth_step_saving")
+    sit = "중도해지 시 불이익을 설명하고 확인 서명을 받았다."
+    kw = dict(seed=3, situation=sit)
+    off = single_shot(product, personas[0], config=DebateConfig(screen_situation=False), **kw)
+    on = single_shot(product, personas[0], config=DebateConfig(screen_situation=True), **kw)
+
+    assert off.verdict.suitability == on.verdict.suitability
+    assert off.verdict.intent_score == on.verdict.intent_score
+    # 우려는 줄어들 수 있어도 늘어날 수는 없다
+    assert len(on.verdict.concerns) <= len(off.verdict.concerns)

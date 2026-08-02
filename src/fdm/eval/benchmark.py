@@ -171,6 +171,11 @@ class AblationReport(BaseModel):
     model_small: str = ""
     model_judge: str = ""
     n_seeds: int = 1
+    screen_situation: bool = Field(
+        default=False,
+        description="판매 정황 모순 스크리닝(FDM_SCREEN_SITUATION)을 켜고 돌렸는가. "
+        "결과 파일만 보고 조건을 알 수 있어야 비교가 성립한다",
+    )
     seed_base: int = Field(
         default=7000,
         description="시드 시작값. 이 값을 바꿔 재실행하면 표집 노이즈를 측정할 수 있다",
@@ -436,6 +441,7 @@ def run_ablation(
         model_small=SETTINGS.model_small,
         model_judge=SETTINGS.model_judge,
         n_seeds=n_seeds,
+        screen_situation=(config or DebateConfig()).screen_situation,
         seed_base=seed_base,
         arms=scores,
         delta_accuracy_vs_single=d_acc,
