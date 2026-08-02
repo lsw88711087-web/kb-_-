@@ -65,6 +65,21 @@ RISK_COLORS = {
     "판매원칙 위험": "#b91c1c",
     "추가 검증 필요": "#4b5563",
 }
+DIAGNOSTIC_ITEM_PREFIXES = (
+    "LLM JSON 파싱/호출 실패",
+    "일부 시드에서 LLM JSON 파싱/호출 실패",
+    "seed=",
+)
+DIAGNOSTIC_ITEM_MARKERS = (
+    "FDM_LLM_",
+    "FDM_OPENAI_",
+    "FDM_GEMINI_",
+    "generativelanguage.googleapis.com",
+    "openai/chat/completions",
+    "JSON 파싱 실패",
+    "연결 실패:",
+    "호출 실패:",
+)
 CATEGORY_FORM_COPY = {
     "saving": {
         "finance_title": "적금 금리·기간·납입",
@@ -332,8 +347,21 @@ def simulation_dataframe(sim: SimulationReport) -> pd.DataFrame:
     )
 
 
+def is_diagnostic_item(item: str) -> bool:
+    text = item.strip()
+    if not text:
+        return False
+    return text.startswith(DIAGNOSTIC_ITEM_PREFIXES) or any(
+        marker in text for marker in DIAGNOSTIC_ITEM_MARKERS
+    )
+
+
 def top_items(items: list[str], n: int = 5) -> list[tuple[str, int]]:
-    return Counter(x for x in items if x).most_common(n)
+    return Counter(
+        x.strip()
+        for x in items
+        if x and x.strip() and not is_diagnostic_item(x)
+    ).most_common(n)
 
 
 def scenario_delta_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -399,6 +427,8 @@ def product_from_form(template: Product, segment_names: list[str]) -> Product | 
     )
     category = LABEL_TO_CATEGORY[category_label]
     copy = CATEGORY_FORM_COPY[category]
+    template_preferentials = template.preferentials or []
+    template_fees = template.fees or []
 
     summary = st.text_area("상품 요약", value=template.summary, height=90, key="summary")
 
@@ -510,13 +540,13 @@ def product_from_form(template: Product, segment_names: list[str]) -> Product | 
         copy["condition_count"],
         min_value=0,
         max_value=8,
-        value=max(1, len(template.preferentials)),
+        value=max(1, len(template_preferentials)),
         step=1,
         key="pref_count",
     )
     preferentials: list[Preferential] = []
     for i in range(int(pref_count)):
-        base = template.preferentials[i] if i < len(template.preferentials) else None
+        base = template_preferentials[i] if i < len(template_preferentials) else None
         p1, p2, p3, p4 = st.columns([1.1, 0.7, 2.4, 0.8])
         pname = p1.text_input(copy["condition_name"], value=base.name if base else "", key=f"pref_name_{i}")
         bonus = p2.number_input(
@@ -550,18 +580,18 @@ def product_from_form(template: Product, segment_names: list[str]) -> Product | 
     fee_count = st.number_input(
         "수수료 항목 수",
         min_value=0,
-        max_value=6,
-        value=len(template.fees),
+        max_value=12,
+        value=len(template_fees),
         step=1,
         key="fee_count",
     )
     fees: list[Fee] = []
     for i in range(int(fee_count)):
-        base = template.fees[i] if i < len(template.fees) else None
+        base = template_fees[i] if i < len(template_fees) else None
         f1, f2, f3 = st.columns([1.0, 1.0, 2.0])
         fname = f1.text_input("수수료명", value=base.name if base else "", key=f"fee_name_{i}")
         amount = f2.text_input("금액", value=base.amount if base else "", key=f"fee_amount_{i}")
-        condition = f3.text_input("조건", value=base.condition if base else "", key=f"fee_condition_{i}")
+        condition = f3.text_area("조건", value=base.condition if base else "", height=90, key=f"fee_condition_{i}")
         if fname or amount or condition:
             fees.append(Fee(name=fname or f"수수료 {i + 1}", amount=amount or "별도 고지", condition=condition))
 
@@ -582,7 +612,7 @@ def product_from_form(template: Product, segment_names: list[str]) -> Product | 
     )
 
     st.markdown("**타깃과 근거**")
-    target_description = st.text_input("타깃 설명", value=template.target_description, key="target_description")
+    target_description = st.text_area("타깃 설명", value=template.target_description, height=110, key="target_description")
     target_segments = st.multiselect(
         "타깃 세그먼트",
         segment_names,
@@ -592,7 +622,7 @@ def product_from_form(template: Product, segment_names: list[str]) -> Product | 
     clause_count = st.number_input(
         "약관/설명서 조항 수",
         min_value=0,
-        max_value=10,
+        max_value=15,
         value=max(1, len(template.clauses)),
         step=1,
         key="clause_count",
