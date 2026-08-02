@@ -28,7 +28,7 @@ from fdm.eval.simulate import (  # noqa: E402
 )
 from fdm.personas.loader import load_personas  # noqa: E402
 from fdm.personas.schema import Persona, Segment  # noqa: E402
-from fdm.products.schema import Clause, Fee, Preferential, Product, load_all_products  # noqa: E402
+from fdm.products.schema import Clause, Fee, Preferential, Product  # noqa: E402
 from fdm.report import build_report, save_report  # noqa: E402
 from fdm.services.workbench import (  # noqa: E402
     PRESET_CONFIGS,
@@ -52,13 +52,8 @@ CATEGORY_LABELS = {
 }
 LABEL_TO_CATEGORY = {v: k for k, v in CATEGORY_LABELS.items()}
 MODE_OPTIONS = ["single", "debate"]
-PERSONA_SOURCES = ["synthetic", "auto", "jsonl", "hf"]
-BACKEND_OPTIONS = ["mock", "gemini", "openai", "vllm", "ollama"]
-BACKEND_DEFAULT_MODELS = {
-    "gemini": ("gemini-3.6-flash", "gemini-3.6-flash"),
-    "openai": ("gpt-4.1-mini", "gpt-4.1"),
-    "ollama": ("qwen3:8b", "qwen3:8b"),
-}
+DEFAULT_PERSONA_SOURCE = "synthetic"
+DEFAULT_PERSONA_LIMIT = 400
 RISK_COLORS = {
     "정상": "#2f6f4e",
     "조건 보완 권고": "#b7791f",
@@ -97,7 +92,7 @@ CATEGORY_FORM_COPY = {
         "condition_default": "우대조건",
         "fee_title": "수수료·과세·중도해지",
         "tax": "과세",
-        "early": "중도해지 조건",
+        "early": "중도해지",
         "risk": "유의사항(줄바꿈으로 구분)",
     },
     "deposit": {
@@ -116,7 +111,7 @@ CATEGORY_FORM_COPY = {
         "condition_default": "우대조건",
         "fee_title": "수수료·과세·중도해지",
         "tax": "과세",
-        "early": "중도해지 조건",
+        "early": "중도해지",
         "risk": "유의사항(줄바꿈으로 구분)",
     },
     "loan": {
@@ -196,43 +191,11 @@ CATEGORY_FORM_COPY = {
         "risk": "투자위험·환매 유의사항(줄바꿈으로 구분)",
     },
 }
-PRODUCT_FORM_KEYS = {
-    "product_id",
-    "product_name",
-    "issuer",
-    "category",
-    "summary",
-    "intr_rate",
-    "intr_rate2",
-    "save_trm_months",
-    "rate_basis",
-    "intr_rate_type",
-    "min_monthly",
-    "max_monthly",
-    "limit_manwon",
-    "pref_count",
-    "fee_count",
-    "taxation",
-    "early_termination",
-    "risk_notes",
-    "target_description",
-    "target_segments",
-    "clause_count",
-    "change_note",
-}
-PRODUCT_FORM_PREFIXES = ("pref_", "fee_", "clause_")
-
-
 @st.cache_resource(show_spinner=False)
 def db() -> WorkbenchDB:
     store = WorkbenchDB()
     store.initialize()
     return store
-
-
-@st.cache_data(show_spinner=False)
-def template_products() -> list[dict[str, Any]]:
-    return [p.model_dump(mode="json") for p in load_all_products()]
 
 
 @st.cache_data(show_spinner=False)
@@ -273,34 +236,6 @@ def product_version_label(record) -> str:
 def run_label(run) -> str:
     suffix = run.finished_at or run.started_at
     return f"#{run.id} {run.product_name} v{run.version_number} · {run.preset} · {run.status} · {suffix}"
-
-
-def apply_backend_defaults(backend: str) -> None:
-    defaults = BACKEND_DEFAULT_MODELS.get(backend)
-    if not defaults:
-        return
-    small, judge = defaults
-    if backend == "gemini" and not SETTINGS.model_small.startswith("gemini-"):
-        SETTINGS.model_small = small
-    if backend == "gemini" and not SETTINGS.model_judge.startswith("gemini-"):
-        SETTINGS.model_judge = judge
-    if backend == "openai" and SETTINGS.model_small.startswith(("qwen", "gemini-")):
-        SETTINGS.model_small = small
-    if backend == "openai" and SETTINGS.model_judge.startswith(("qwen", "gemini-")):
-        SETTINGS.model_judge = judge
-    if backend == "ollama" and SETTINGS.model_small.startswith(("gemini-", "gpt-")):
-        SETTINGS.model_small = small
-    if backend == "ollama" and SETTINGS.model_judge.startswith(("gemini-", "gpt-")):
-        SETTINGS.model_judge = judge
-
-
-def set_backend_base_url(backend: str, base_url: str) -> None:
-    if backend == "gemini":
-        SETTINGS.gemini_base_url = base_url
-    elif backend == "openai":
-        SETTINGS.openai_base_url = base_url
-    elif backend == "vllm":
-        SETTINGS.vllm_base_url = base_url
 
 
 def split_lines(text: str) -> list[str]:
@@ -398,17 +333,6 @@ def ensure_personas(source: str, limit: int) -> list[Persona]:
     except Exception as exc:
         st.error(f"페르소나 로딩 실패: {exc}")
         st.stop()
-
-
-def reset_product_form_on_template_change(pick: str) -> None:
-    previous = st.session_state.get("_last_template_pick")
-    if previous is not None and previous != pick:
-        for key in list(st.session_state.keys()):
-            if key in PRODUCT_FORM_KEYS or key.startswith(PRODUCT_FORM_PREFIXES):
-                del st.session_state[key]
-        st.session_state["_last_template_pick"] = pick
-        st.rerun()
-    st.session_state["_last_template_pick"] = pick
 
 
 def product_from_form(template: Product, segment_names: list[str]) -> Product | None:
@@ -816,37 +740,21 @@ def segment_builder(store: WorkbenchDB, personas: list[Persona]) -> list[Segment
 def sidebar(store: WorkbenchDB) -> tuple[str, int]:
     with st.sidebar:
         st.subheader("실행 환경")
-        backend_index = BACKEND_OPTIONS.index(SETTINGS.backend) if SETTINGS.backend in BACKEND_OPTIONS else 0
-        picked_backend = st.selectbox("LLM 백엔드", BACKEND_OPTIONS, index=backend_index)
-        if picked_backend != SETTINGS.backend:
-            SETTINGS.backend = picked_backend
-            apply_backend_defaults(picked_backend)
-        if SETTINGS.backend in {"gemini", "openai", "vllm"}:
-            base_url = st.text_input("LLM API URL", value=SETTINGS.base_url)
-            set_backend_base_url(SETTINGS.backend, base_url.strip())
-            api_key = st.text_input(
-                "API 키",
-                value=st.session_state.get("llm_api_key_input", ""),
-                type="password",
-                placeholder="환경변수에 없을 때 현재 세션에서만 사용",
-            )
-            st.session_state["llm_api_key_input"] = api_key
-            if api_key:
-                SETTINGS.llm_api_key = api_key
-            if SETTINGS.llm_api_key:
-                st.caption("API 키: 설정됨")
-            else:
-                st.warning("외부 API를 쓰려면 API 키를 설정하세요.")
+        persona_source = DEFAULT_PERSONA_SOURCE
+        persona_limit = DEFAULT_PERSONA_LIMIT
+        for label, value in (
+            ("LLM 백엔드", SETTINGS.backend),
+            ("토론모델", SETTINGS.model_small),
+            ("심판모델", SETTINGS.model_judge),
+            ("페르소나 출처", persona_source),
+            ("페르소나 로드 수", f"{persona_limit}"),
+        ):
+            st.markdown(f"**{label}**  \n`{value}`")
         if SETTINGS.backend == "gemini" and (
             not SETTINGS.model_small.startswith("gemini-") or not SETTINGS.model_judge.startswith("gemini-")
         ):
             st.warning("Gemini 백엔드는 Gemini 모델명을 사용해야 합니다.")
-        c1, c2 = st.columns(2)
-        SETTINGS.model_small = c1.text_input("토론모델", value=SETTINGS.model_small)
-        SETTINGS.model_judge = c2.text_input("심판모델", value=SETTINGS.model_judge)
-        persona_source = st.selectbox("페르소나 출처", PERSONA_SOURCES, index=0)
-        persona_limit = st.slider("페르소나 로드 수", 80, 2000, 400, step=40)
-        st.caption(f"SQLite DB: `{store.path}`")
+        st.caption("LLM 설정은 서버 환경변수 기준이며, 페르소나는 UI 기본값으로 고정됩니다.")
 
         st.divider()
         st.subheader("현재 작업")
@@ -890,7 +798,7 @@ with tab_portfolio:
     st.subheader("상품 포트폴리오 홈")
     rows = store.portfolio_rows()
     if not rows:
-        st.info("저장된 상품 프로젝트가 없습니다. 상품 설계 탭에서 샘플을 불러와 첫 버전을 저장하세요.")
+        st.info("저장된 상품 프로젝트가 없습니다. 상품 설계 탭에서 신규 초안을 저장하세요.")
     else:
         df = pd.DataFrame([r.__dict__ for r in rows]).rename(
             columns={
@@ -923,17 +831,9 @@ with tab_portfolio:
 
 with tab_product:
     segment_names = [r.name for r in store.list_segment_definitions()]
-    templates = [Product(**row) for row in template_products()]
     active = selected_version(store)
-    template_options = ["새 상품 초안"] + [f"샘플: {p.name}" for p in templates]
     if active:
-        template_options.insert(1, f"현재 선택: {active.product.name} v{active.version_number}")
-    pick = st.selectbox("초안 템플릿", template_options, key="template_pick")
-    reset_product_form_on_template_change(pick)
-    if pick.startswith("현재 선택") and active:
         template = active.product
-    elif pick.startswith("샘플"):
-        template = templates[[f"샘플: {p.name}" for p in templates].index(pick)]
     else:
         template = Product(
             product_id="NEW-2026-001",
