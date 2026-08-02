@@ -337,7 +337,6 @@ def ensure_personas(source: str, limit: int) -> list[Persona]:
 
 def product_from_form(template: Product, segment_names: list[str]) -> Product | None:
     st.subheader("상품 설계 캔버스")
-    st.caption("JSON을 직접 편집하지 않고 기존 Product 스키마와 호환되는 상품 정의를 만듭니다.")
 
     c1, c2, c3, c4 = st.columns([1.1, 1.4, 1.2, 1.0])
     product_id = c1.text_input("상품 ID", value=template.product_id, key="product_id")
@@ -840,7 +839,7 @@ with tab_product:
             name="신규 금융상품 초안",
             category="saving",
             issuer="KB국민은행(가상 신상품)",
-            summary="타깃 고객군과 우대조건을 검증하기 위한 신규 상품 초안입니다.",
+            summary="상품 관련 설명을 입력해주세요",
             intr_rate=3.0,
             intr_rate2=4.5,
             save_trm_months=12,
@@ -849,8 +848,8 @@ with tab_product:
             preferentials=[
                 Preferential(name="급여이체 우대", rate_bonus_pct=0.5, requirement="당행 계좌로 급여 입금")
             ],
-            early_termination="중도해지 시 우대금리 미적용, 가입기간별 중도해지이율 적용",
-            risk_notes=["최고금리는 모든 우대조건 충족을 전제합니다."],
+            early_termination="중도해지 시 우대금리 미적용, 가입기간별 중도해지이율 적용 등",
+            risk_notes=["유의사항을 작성해주세요"],
             target_description="상품 설계자가 지정한 타깃 세그먼트",
             target_segments=segment_names[:2],
             clauses=[
@@ -866,8 +865,6 @@ with tab_product:
     if product:
         st.markdown("**사전 검증 경고**")
         errors = issues_panel(product)
-        with st.expander("생성될 Product JSON", expanded=False):
-            st.json(product.model_dump(mode="json"))
         change_note = st.text_input("변경 메모", value="UI 상품 설계 캔버스 저장", key="change_note")
         save_disabled = bool(errors)
         if st.button("상품 버전 저장", type="primary", disabled=save_disabled):
