@@ -117,7 +117,7 @@ class LLMClient:
             ) from e
 
         data = r.json()
-        text = data["choices"][0]["message"]["content"] or ""
+        text = _extract_chat_text(data)
         return LLMResponse(text=_strip_think(text), model=model, raw=data)
 
     def _chat_ollama_native(
@@ -244,6 +244,83 @@ def _missing_key_groups(
         for group in required_keys
         if not any(k in obj and obj[k] not in (None, "", [], {}) for k in group)
     ]
+
+
+def _extract_chat_text(data: dict[str, Any]) -> str:
+    """Return assistant text from OpenAI-compatible chat responses.
+
+    일부 호환 서버는 차단/토큰 제한 상황에서 `choices[0].message`를 생략하거나,
+    legacy 형태의 `choices[0].text`를 돌려준다. 이 차이를 KeyError로 새지 않게
+    여기서 흡수하고, 본문이 없으면 run_case가 잡을 수 있는 LLMError로 바꾼다.
+    """
+    if not isinstance(data, dict):
+        raise LLMError(f"LLM 응답 형식 오류: JSON 객체가 아님 {_json_preview(data)}")
+    if data.get("error"):
+        raise LLMError(f"LLM API 오류 응답: {_json_preview(data['error'])}")
+
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        output_text = _content_to_text(data.get("output_text"))
+        if output_text:
+            return output_text
+        raise LLMError(f"LLM 응답 형식 오류: choices가 비어 있음 {_json_preview(data)}")
+
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise LLMError(f"LLM 응답 형식 오류: choices[0]가 객체가 아님 {_json_preview(choice)}")
+
+    for key in ("message", "delta"):
+        message = choice.get(key)
+        if isinstance(message, dict):
+            text = _content_to_text(message.get("content"))
+            if text:
+                return text
+            refusal = _content_to_text(message.get("refusal"))
+            if refusal:
+                raise LLMError(f"LLM 응답 거부: {refusal[:300]}")
+
+    text = _content_to_text(choice.get("text"))
+    if text:
+        return text
+
+    finish_reason = choice.get("finish_reason") or data.get("finish_reason")
+    raise LLMError(
+        "LLM 응답 본문 없음: choices[0].message.content를 찾지 못했습니다 "
+        f"(finish_reason={finish_reason!r}). 응답 일부: {_json_preview(data)}"
+    )
+
+
+def _content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                for key in ("text", "content"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        parts.append(value)
+                        break
+        return "\n".join(p.strip() for p in parts if p and p.strip()).strip()
+    if isinstance(content, dict):
+        for key in ("text", "content"):
+            value = content.get(key)
+            if isinstance(value, str):
+                return value.strip()
+    return ""
+
+
+def _json_preview(value: Any, limit: int = 500) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        text = repr(value)
+    return text[:limit]
 
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)

@@ -864,7 +864,7 @@ with tab_product:
     if product:
         st.markdown("**사전 검증 경고**")
         errors = issues_panel(product)
-        change_note = st.text_input("변경 메모", value="UI 상품 설계 캔버스 저장", key="change_note")
+        change_note = st.text_input("메모", value="메모 내용 입력", key="change_note")
         save_disabled = bool(errors)
         if st.button("상품 버전 저장", type="primary", disabled=save_disabled):
             rec = store.save_product_version(product, change_note=change_note)
@@ -975,7 +975,7 @@ with tab_run:
                     settings=run_settings,
                 )
                 product_for_run = active.product.model_copy(update={"target_segments": selected_names})
-                with st.spinner("검증을 실행하는 중입니다. mock 외 백엔드는 시간이 걸릴 수 있습니다."):
+                with st.spinner("검증을 실행하는 중입니다."):
                     sim = simulate_product(
                         product_for_run,
                         segments=selected_segments,

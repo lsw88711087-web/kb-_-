@@ -164,6 +164,58 @@ def test_gemini_chat_payload_omits_seed(monkeypatch):
     assert captured["json"]["reasoning_effort"] == "low"
 
 
+def test_chat_extracts_compatible_response_variants(monkeypatch):
+    settings = Settings(
+        backend="openai",
+        llm_api_key="token",
+        model_small="m",
+        model_judge="m",
+        timeout=1,
+    )
+    client = LLMClient(settings)
+    replies = [
+        {"choices": [{"text": "legacy ok"}]},
+        {"choices": [{"message": {"content": [{"type": "text", "text": "list ok"}]}}]},
+    ]
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return replies.pop(0)
+
+    monkeypatch.setattr("fdm.llm.httpx.post", lambda *args, **kwargs: FakeResponse())
+
+    assert client.chat(role="judge", system="s", user="u").text == "legacy ok"
+    assert client.chat(role="judge", system="s", user="u").text == "list ok"
+
+
+def test_chat_raises_llmerror_when_response_has_no_content(monkeypatch):
+    from fdm.llm import LLMError
+
+    settings = Settings(
+        backend="openai",
+        llm_api_key="token",
+        model_small="m",
+        model_judge="m",
+        timeout=1,
+    )
+    client = LLMClient(settings)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"finish_reason": "content_filter"}]}
+
+    monkeypatch.setattr("fdm.llm.httpx.post", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(LLMError, match="응답 본문 없음"):
+        client.chat(role="judge", system="s", user="u")
+
+
 def test_chat_json_requires_keys_and_repairs(monkeypatch):
     """심판이 다른 스키마로 답하면 조용히 기본값으로 넘기지 말고 재요청해야 한다."""
     from fdm.llm import LLMClient, LLMError
