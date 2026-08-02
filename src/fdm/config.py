@@ -19,7 +19,7 @@ PERSONA_DIR = DATA_DIR / "personas"
 PRODUCT_DIR = DATA_DIR / "products"
 RAG_DIR = DATA_DIR / "rag"
 BENCHMARK_DIR = DATA_DIR / "benchmark"
-OUTPUT_DIR = ROOT / "outputs"
+OUTPUT_DIR = Path(os.environ.get("FDM_OUTPUT_DIR", str(ROOT / "outputs")))
 
 
 def _env(key: str, default: str) -> str:
@@ -135,4 +135,4 @@ ROLE_MODEL = {
     "single": "judge",  # 애블레이션의 단발 질문(디베이트 없음)도 심판 모델로 공정 비교
 }
 
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

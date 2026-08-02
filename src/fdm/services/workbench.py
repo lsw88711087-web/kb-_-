@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from ..personas.loader import filter_segment, is_nemotron_persona
 from ..personas.schema import Persona, Segment
 from ..products.schema import Product
 
-DB_PATH = DATA_DIR / "workbench.sqlite3"
+DB_PATH = Path(os.environ.get("FDM_DB_PATH", str(DATA_DIR / "workbench.sqlite3")))
 PRODUCT_ARTIFACT_DIR = OUTPUT_DIR / "products"
 
 ProductStatus = Literal["초안", "검증 중", "보완 필요", "출시 검토 가능", "승인 완료"]

@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 outputs/
+data/workbench.sqlite3
 data/personas/*.jsonl
 data/products/_finlife_drafts/
 
