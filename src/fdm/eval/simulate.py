@@ -361,10 +361,15 @@ def sensitivity_analysis(
     specs: list[VariantSpec],
     *,
     segment_names: list[str] | None = None,
+    segments: list[Segment] | None = None,
     k_personas: int = 3,
     n_seeds: int = 2,
     mode: Mode = "debate",
     workers: int = 4,
+    config: DebateConfig | None = None,
+    personas: list[Persona] | None = None,
+    persona_source: PersonaSource = "auto",
+    require_real_personas: bool = False,
 ) -> list[SensitivityRow]:
     rows: list[SensitivityRow] = []
     base = VariantSpec(label="기준안")
@@ -373,10 +378,15 @@ def sensitivity_analysis(
         rep = simulate_product(
             variant,
             segment_names=segment_names or product.target_segments or None,
+            segments=segments,
             k_personas=k_personas,
             n_seeds=n_seeds,
             mode=mode,
             workers=workers,
+            config=config,
+            personas=personas,
+            persona_source=persona_source,
+            require_real_personas=require_real_personas,
             progress=False,
         )
         for sr in rep.segments:

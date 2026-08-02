@@ -13,11 +13,11 @@ from fdm.agents.schema import (
     is_grounded,
     normalize_suitability,
 )
-from fdm.config import SETTINGS
+from fdm.config import SETTINGS, Settings
 from fdm.eval.benchmark import load_cases, run_ablation
 from fdm.eval.confidence import aggregate
-from fdm.eval.simulate import VariantSpec, apply_variant, load_segments, simulate_product
-from fdm.llm import extract_json
+from fdm.eval.simulate import VariantSpec, apply_variant, load_segments, sensitivity_analysis, simulate_product
+from fdm.llm import LLMClient, extract_json
 from fdm.personas.loader import filter_segment, load_personas, sample_cohort
 from fdm.products.schema import load_all_products, load_product
 from fdm.rag.retriever import get_retriever
@@ -104,6 +104,64 @@ def test_retrieval_excludes_ids():
 def test_extract_json_variants(raw):
     obj = extract_json(raw)
     assert obj is not None and "적합성" in obj
+
+
+def test_gemini_settings_use_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setenv("FDM_BACKEND", "gemini")
+    monkeypatch.setenv("FDM_GEMINI_API_KEY", "gemini-token")
+    monkeypatch.setenv(
+        "FDM_GEMINI_BASE_URL",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+    )
+    monkeypatch.delenv("FDM_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("FDM_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("FDM_MODEL_SMALL", raising=False)
+    monkeypatch.delenv("FDM_MODEL_JUDGE", raising=False)
+
+    settings = Settings()
+    client = LLMClient(settings)
+
+    assert settings.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert settings.model_small == "gemini-3.6-flash"
+    assert settings.model_judge == "gemini-3.6-flash"
+    assert client._headers() == {"Authorization": "Bearer gemini-token"}
+
+
+def test_gemini_chat_payload_omits_seed(monkeypatch):
+    settings = Settings(
+        backend="gemini",
+        llm_api_key="gemini-token",
+        model_small="gemini-3.6-flash",
+        model_judge="gemini-3.6-flash",
+        gemini_reasoning_effort="low",
+        timeout=1,
+    )
+    client = LLMClient(settings)
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def fake_post(url, *, json, headers, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("fdm.llm.httpx.post", fake_post)
+
+    res = client.chat(role="judge", system="s", user="u", seed=0)
+
+    assert res.text == "ok"
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert captured["headers"] == {"Authorization": "Bearer gemini-token"}
+    assert "seed" not in captured["json"]
+    assert captured["json"]["reasoning_effort"] == "low"
 
 
 def test_chat_json_requires_keys_and_repairs(monkeypatch):
@@ -459,6 +517,26 @@ def test_apply_variant_changes_rates():
     assert v.intr_rate == round(product.intr_rate - 0.5, 3)
     assert v.product_id.endswith("::금리-0.5")
     assert product.intr_rate == 3.7  # 원본 불변
+
+
+def test_sensitivity_analysis_accepts_ui_runtime_inputs(personas):
+    product = load_product("01_youth_step_saving")
+    segments = load_segments(product.target_segments[:1])
+
+    rows = sensitivity_analysis(
+        product,
+        [VariantSpec(label="금리+0.1", rate_delta_pct=0.1)],
+        segments=segments,
+        k_personas=1,
+        n_seeds=1,
+        mode="single",
+        workers=1,
+        personas=personas,
+        persona_source="synthetic",
+    )
+
+    assert {r.label for r in rows} == {"기준안", "금리+0.1"}
+    assert {r.segment for r in rows} == {segments[0].name}
 
 
 # ------------------------------------------------------------------ 애블레이션
