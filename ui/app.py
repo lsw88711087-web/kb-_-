@@ -753,7 +753,6 @@ def sidebar(store: WorkbenchDB) -> tuple[str, int]:
             not SETTINGS.model_small.startswith("gemini-") or not SETTINGS.model_judge.startswith("gemini-")
         ):
             st.warning("Gemini 백엔드는 Gemini 모델명을 사용해야 합니다.")
-        st.caption("LLM 설정은 서버 환경변수 기준이며, 페르소나는 UI 기본값으로 고정됩니다.")
 
         st.divider()
         st.subheader("현재 작업")
